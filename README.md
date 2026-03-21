@@ -58,6 +58,61 @@ await ai.adapt(myCodebase);
 
 ---
 
+## Node.js / Server-Side Usage
+
+SSM.js and MambaKit are browser-first, but can run natively in Node.js by injecting a WebGPU adapter and an IndexedDB factory. This is how [CoderClaw](https://coderclaw.ai) loads user-trained `.bin` models as a local hippocampus.
+
+**Install the Node.js shims:**
+
+```bash
+npm install @webgpu/node fake-indexeddb
+```
+
+**Usage:**
+
+```ts
+import { create as createGPU } from '@webgpu/node';
+import { IDBFactory }          from 'fake-indexeddb';
+import { SSM, MemoryStore }    from 'ssmjs';
+
+// Obtain a WebGPU adapter from @webgpu/node (Google's Dawn implementation)
+const gpuAdapter = await createGPU().requestAdapter({ powerPreference: 'high-performance' });
+const idbFactory = new IDBFactory();
+
+const runtime = await SSM.create({
+  session: {
+    gpuAdapter,                        // injected — skips navigator.gpu entirely
+    idbFactory,                        // injected — skips globalThis.indexedDB
+    checkpointUrl: '.coderClaw/model.bin',  // path to a user-trained .bin
+    modelSize    : 'small',
+    mambaVersion : 'mamba2',
+  },
+  bridge: myFrontierLLMBridge,         // cortex: Claude / GPT-4 / Ollama
+});
+
+// MemoryStore also accepts idbFactory for Node.js
+const memory = new MemoryStore({ idbFactory });
+
+for await (const token of runtime.stream('Explain this codebase:')) {
+  process.stdout.write(token);
+}
+```
+
+**Requirements:**
+- Node.js 18+
+- `@webgpu/node` — Dawn-based WebGPU for Node.js; supports all WGSL compute kernels used by MambaKit
+- `fake-indexeddb` — in-memory IndexedDB compatible with the IDB spec; already used in SSM.js tests
+
+**What works in Node.js:**
+- ✅ Model inference (`generate`, `stream`, `streamHybrid`)
+- ✅ Fine-tuning / WSLA adaptation (`adapt`)
+- ✅ Distillation (`DistillationEngine`)
+- ✅ `MemoryStore` (fact storage + weight persistence via `fake-indexeddb`)
+- ❌ `storage: 'download'` — browser Blob URL download not available
+- ❌ `storage: 'fileSystem'` — File System Access API not available; use `checkpointUrl` with a local file path instead
+
+---
+
 ## Core Concepts
 
 ### SSMRuntime
@@ -165,7 +220,12 @@ Persistent semantic key-value memory, separate from model weights.
 ```ts
 import { MemoryStore } from 'ssmjs';
 
+// Browser
 const memory = new MemoryStore({ dbName: 'my-app' });
+
+// Node.js — inject fake-indexeddb
+import { IDBFactory } from 'fake-indexeddb';
+const memory = new MemoryStore({ dbName: 'my-app', idbFactory: new IDBFactory() });
 
 // Store facts
 await memory.remember('author', 'Sean Hogg');
