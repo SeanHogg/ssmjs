@@ -23,6 +23,13 @@ export interface MemoryStoreOptions {
     dbName?     : string;
     /** Key used for weight storage within the 'weights' object store. Default: 'ssmjs-weights'. */
     weightsKey? : string;
+    /**
+     * IDBFactory to use instead of the global `indexedDB`.
+     * Use this in Node.js environments with fake-indexeddb:
+     *   import { IDBFactory } from 'fake-indexeddb';
+     *   const idbFactory = new IDBFactory();
+     */
+    idbFactory? : IDBFactory;
 }
 
 const FACTS_STORE   = 'facts';
@@ -38,11 +45,13 @@ interface SaveLoadRuntime {
 export class MemoryStore {
     private readonly _dbName    : string;
     private readonly _weightsKey: string;
+    private readonly _idb       : IDBFactory | undefined;
     private _db: IDBDatabase | null = null;
 
     constructor(opts: MemoryStoreOptions = {}) {
         this._dbName     = opts.dbName     ?? 'ssmjs';
         this._weightsKey = opts.weightsKey ?? 'ssmjs-weights';
+        this._idb        = opts.idbFactory;
     }
 
     // ── Internal DB open ──────────────────────────────────────────────────────
@@ -51,15 +60,16 @@ export class MemoryStore {
         if (this._db) return Promise.resolve(this._db);
 
         return new Promise((resolve, reject) => {
-            if (typeof indexedDB === 'undefined') {
+            const factory = this._idb ?? (typeof indexedDB !== 'undefined' ? indexedDB : undefined);
+            if (!factory) {
                 reject(new SSMError(
                     'MEMORY_UNAVAILABLE',
-                    'IndexedDB is not available in this environment.',
+                    'IndexedDB is not available in this environment. Pass an idbFactory option (e.g. from fake-indexeddb) for Node.js support.',
                 ));
                 return;
             }
 
-            const req = indexedDB.open(this._dbName, DB_VERSION);
+            const req = factory.open(this._dbName, DB_VERSION);
 
             req.onupgradeneeded = (e) => {
                 const db = (e.target as IDBOpenDBRequest).result;
