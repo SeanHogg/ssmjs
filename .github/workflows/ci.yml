@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    name: Build & Lint (Node.js ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: ["18.x", "20.x", "22.x"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build (TypeScript → dist/)
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Verify declaration files are emitted
+        run: |
+          missing=0
+          for f in \
+            dist/index.d.ts \
+            dist/runtime/SSMRuntime.d.ts \
+            dist/bridges/TransformerBridge.d.ts \
+            dist/bridges/OpenAIBridge.d.ts \
+            dist/bridges/AnthropicBridge.d.ts \
+            dist/router/InferenceRouter.d.ts \
+            dist/memory/MemoryStore.d.ts \
+            dist/distillation/DistillationEngine.d.ts \
+            dist/agent/SSMAgent.d.ts \
+            dist/errors/SSMError.d.ts; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: $f not found after build"
+              missing=1
+            fi
+          done
+          if [ $missing -eq 1 ]; then exit 1; fi
+          echo "✓ All TypeScript declaration files present"
+
+      - name: Upload build artifact (Node 20 only)
+        if: matrix.node-version == '20.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssmjs-dist
+          path: dist/
+          retention-days: 7
