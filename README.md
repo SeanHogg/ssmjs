@@ -351,6 +351,32 @@ src/
 
 ---
 
+## Professional Platform
+
+**SSM.js patterns are the architectural foundation of [Builderforce.ai](https://builderforce.ai)'s Agent Runtime.**
+
+Builderforce.ai implements the SSM.js runtime model natively in the browser — the same `step()` → inference → confidence scoring → cloud escalation pipeline runs inside the IDE's `agent-runtime.ts`:
+
+| SSM.js concept | Builderforce.ai equivalent |
+|---|---|
+| `SSMRuntime` | `AgentRuntime` (browser-native, ties to IDE project) |
+| `DistillationEngine` | LLM-assisted dataset generation → in-browser LoRA training |
+| `MemoryStore` | IndexedDB `MambaAgentState` + `AgentPackage` embedding |
+| `SSMAgent` | Published workforce agent (Workforce Registry) |
+| `TransformerBridge` | Cloudflare Workers AI / OpenRouter fallback |
+| Confidence threshold → escalation | Auto-escalation to Workers AI when local score < threshold |
+
+**What Builderforce.ai adds on top:**
+
+- **Visual training panel** — configure LoRA rank, epochs, batch size, learning rate with a loss curve and live log console; no code required
+- **Team collaboration** — real-time Yjs + Durable Objects CRDT editing; multiple users on the same project
+- **Workforce Registry** — publish `SSMAgent`-equivalent specialists; discoverable by skills; hirable by the community
+- **CoderClaw mesh** — agents deploy as self-hosted coding agents via [CoderClaw](https://coderclaw.ai) and receive task assignments from Builderforce
+
+Use SSM.js to build custom agent runtimes in your own applications. Use Builderforce.ai for the full managed experience — IDE, training infrastructure, agent publishing, and enterprise orchestration.
+
+---
+
 ## License
 
 MIT

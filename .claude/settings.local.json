@@ -12,8 +12,7 @@
       "WebFetch",
       "WebSearch",
       "TodoWrite",
-      "NotebookEdit",
-      "Bash(npm ls:*)"
+      "NotebookEdit"
     ],
     "defaultMode": "bypassPermissions"
   }
