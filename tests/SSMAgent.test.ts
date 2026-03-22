@@ -12,14 +12,14 @@ import type { MemoryStore, MemoryEntry } from '../src/memory/MemoryStore.js';
 
 function makeRuntime(overrides: Partial<SSMRuntime> = {}): SSMRuntime {
     return {
-        generate    : jest.fn().mockResolvedValue('assistant reply'),
-        stream      : jest.fn().mockImplementation(async function*() { yield 'tok'; }),
-        adapt       : jest.fn().mockResolvedValue({ losses: [], epochCount: 0 }),
-        evaluate    : jest.fn().mockResolvedValue(50),
-        save        : jest.fn().mockResolvedValue(undefined),
-        load        : jest.fn().mockResolvedValue(false),
-        destroy     : jest.fn(),
-        streamHybrid: jest.fn(),
+        generate    : jest.fn<any>().mockResolvedValue('assistant reply'),
+        stream      : jest.fn<any>().mockImplementation(async function*() { yield 'tok'; }),
+        adapt       : jest.fn<any>().mockResolvedValue({ losses: [], epochCount: 0 }),
+        evaluate    : jest.fn<any>().mockResolvedValue(50),
+        save        : jest.fn<any>().mockResolvedValue(undefined),
+        load        : jest.fn<any>().mockResolvedValue(false),
+        destroy     : jest.fn<any>(),
+        streamHybrid: jest.fn<any>(),
         get bridge()    { return undefined; },
         get destroyed() { return false; },
         get internals() { return {} as never; },
@@ -39,13 +39,13 @@ type MockMemory = {
 
 function makeMemory(facts: MemoryEntry[] = []): MockMemory & MemoryStore {
     return {
-        remember    : jest.fn().mockResolvedValue(undefined),
-        recall      : jest.fn().mockResolvedValue(undefined),
-        recallAll   : jest.fn().mockResolvedValue(facts),
-        forget      : jest.fn().mockResolvedValue(undefined),
-        clear       : jest.fn().mockResolvedValue(undefined),
-        saveWeights : jest.fn().mockResolvedValue(undefined),
-        loadWeights : jest.fn().mockResolvedValue(false),
+        remember    : jest.fn<any>().mockResolvedValue(undefined),
+        recall      : jest.fn<any>().mockResolvedValue(undefined),
+        recallAll   : jest.fn<any>().mockResolvedValue(facts),
+        forget      : jest.fn<any>().mockResolvedValue(undefined),
+        clear       : jest.fn<any>().mockResolvedValue(undefined),
+        saveWeights : jest.fn<any>().mockResolvedValue(undefined),
+        loadWeights : jest.fn<any>().mockResolvedValue(false),
     } as unknown as MockMemory & MemoryStore;
 }
 
@@ -62,7 +62,7 @@ test('think calls runtime.generate and returns the response', async () => {
 
 test('think trims hallucinated User turns from model output', async () => {
     const runtime = makeRuntime({
-        generate: jest.fn().mockResolvedValue('answer\nUser: next question\nAssistant: ...'),
+        generate: jest.fn<any>().mockResolvedValue('answer\nUser: next question\nAssistant: ...'),
     });
     const agent = new SSMAgent({ runtime });
 
@@ -95,7 +95,7 @@ test('prompt includes System: line', async () => {
     const agent   = new SSMAgent({ runtime, systemPrompt: 'You are a pirate.' });
 
     await agent.think('arr');
-    const prompt = (runtime.generate as jest.Mock).mock.calls[0][0] as string;
+    const prompt = (runtime.generate as jest.Mock<any>).mock.calls[0][0] as string;
     expect(prompt).toContain('System: You are a pirate.');
 });
 
@@ -104,7 +104,7 @@ test('prompt ends with "User: <input>\\nAssistant:"', async () => {
     const agent   = new SSMAgent({ runtime });
 
     await agent.think('my question');
-    const prompt = (runtime.generate as jest.Mock).mock.calls[0][0] as string;
+    const prompt = (runtime.generate as jest.Mock<any>).mock.calls[0][0] as string;
     expect(prompt).toMatch(/User: my question\nAssistant:$/);
 });
 
@@ -115,7 +115,7 @@ test('prompt includes history from prior turns', async () => {
     await agent.think('first');
     await agent.think('second');
 
-    const secondPrompt = (runtime.generate as jest.Mock).mock.calls[1][0] as string;
+    const secondPrompt = (runtime.generate as jest.Mock<any>).mock.calls[1][0] as string;
     expect(secondPrompt).toContain('User: first');
     expect(secondPrompt).toContain('Assistant: assistant reply');
     expect(secondPrompt).toContain('User: second');
@@ -126,7 +126,7 @@ test('per-turn systemPrompt override is used', async () => {
     const agent   = new SSMAgent({ runtime, systemPrompt: 'default' });
 
     await agent.think('hi', { systemPrompt: 'override' });
-    const prompt = (runtime.generate as jest.Mock).mock.calls[0][0] as string;
+    const prompt = (runtime.generate as jest.Mock<any>).mock.calls[0][0] as string;
     expect(prompt).toContain('System: override');
     expect(prompt).not.toContain('System: default');
 });
@@ -142,7 +142,7 @@ test('history is trimmed to maxHistoryTurns pairs', async () => {
 
     // After turn2, the third prompt should only contain turn2 history (not turn1)
     await agent.think('turn3');
-    const thirdPrompt = (runtime.generate as jest.Mock).mock.calls[2][0] as string;
+    const thirdPrompt = (runtime.generate as jest.Mock<any>).mock.calls[2][0] as string;
     expect(thirdPrompt).toContain('User: turn2');
     expect(thirdPrompt).not.toContain('User: turn1');
 });
@@ -161,7 +161,7 @@ test('clearHistory resets history to empty', async () => {
 
 test('thinkStream yields tokens from runtime.stream', async () => {
     const runtime = makeRuntime({
-        stream: jest.fn().mockImplementation(async function*() {
+        stream: jest.fn<any>().mockImplementation(async function*() {
             yield 'hello';
             yield ' world';
         }),
@@ -178,7 +178,7 @@ test('thinkStream yields tokens from runtime.stream', async () => {
 
 test('thinkStream appends history after stream completes', async () => {
     const runtime = makeRuntime({
-        stream: jest.fn().mockImplementation(async function*() {
+        stream: jest.fn<any>().mockImplementation(async function*() {
             yield 'response';
         }),
     });
@@ -214,7 +214,7 @@ test('recall returns undefined without a MemoryStore', async () => {
 
 test('recall delegates to memory.recall', async () => {
     const memory = makeMemory();
-    (memory.recall as jest.Mock).mockResolvedValue({ key: 'lang', content: 'TypeScript', timestamp: 0 });
+    (memory.recall as jest.Mock<any>).mockResolvedValue({ key: 'lang', content: 'TypeScript', timestamp: 0 });
     const agent = new SSMAgent({ runtime: makeRuntime(), memory });
 
     const val = await agent.recall('lang');
@@ -230,7 +230,7 @@ test('facts matching input keys are injected into the prompt', async () => {
     const agent = new SSMAgent({ runtime, memory });
 
     await agent.think('What stack should I use?');
-    const prompt = (runtime.generate as jest.Mock).mock.calls[0][0] as string;
+    const prompt = (runtime.generate as jest.Mock<any>).mock.calls[0][0] as string;
 
     // "stack" appears in the input
     expect(prompt).toContain('Fact (stack): React + TypeScript');
@@ -247,7 +247,7 @@ test('injectAllFacts injects all facts regardless of key match', async () => {
     const agent = new SSMAgent({ runtime, memory });
 
     await agent.think('unrelated question', { injectAllFacts: true });
-    const prompt = (runtime.generate as jest.Mock).mock.calls[0][0] as string;
+    const prompt = (runtime.generate as jest.Mock<any>).mock.calls[0][0] as string;
 
     expect(prompt).toContain('Fact (stack):');
     expect(prompt).toContain('Fact (goal):');

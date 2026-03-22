@@ -13,25 +13,25 @@ import type { TransformerBridge } from '../src/bridges/TransformerBridge.js';
 
 function makeRuntime(overrides: Partial<SSMRuntime> = {}): SSMRuntime {
     return {
-        generate  : jest.fn().mockResolvedValue('ssm response'),
-        stream    : jest.fn(),
-        adapt     : jest.fn().mockResolvedValue({ losses: [0.5, 0.3], epochCount: 3 }),
-        evaluate  : jest.fn().mockResolvedValue(50),
-        save      : jest.fn().mockResolvedValue(undefined),
-        load      : jest.fn().mockResolvedValue(false),
-        destroy   : jest.fn(),
+        generate  : jest.fn<any>().mockResolvedValue('ssm response'),
+        stream    : jest.fn<any>(),
+        adapt     : jest.fn<any>().mockResolvedValue({ losses: [0.5, 0.3], epochCount: 3 }),
+        evaluate  : jest.fn<any>().mockResolvedValue(50),
+        save      : jest.fn<any>().mockResolvedValue(undefined),
+        load      : jest.fn<any>().mockResolvedValue(false),
+        destroy   : jest.fn<any>(),
         get bridge()    { return undefined; },
         get destroyed() { return false; },
         get internals() { return {} as never; },
-        streamHybrid: jest.fn(),
+        streamHybrid: jest.fn<any>(),
         ...overrides,
     } as unknown as SSMRuntime;
 }
 
 function makeBridge(overrides: Partial<TransformerBridge> = {}): TransformerBridge {
     return {
-        generate        : jest.fn().mockResolvedValue('teacher response'),
-        stream          : jest.fn(),
+        generate        : jest.fn<any>().mockResolvedValue('teacher response'),
+        stream          : jest.fn<any>(),
         supportsStreaming: true,
         ...overrides,
     };
@@ -100,7 +100,7 @@ test('distill forwards opts.adapt to runtime.adapt', async () => {
 });
 
 test('distill throws SSMError(DISTILL_FAILED) when bridge.generate throws', async () => {
-    const bridge  = makeBridge({ generate: jest.fn().mockRejectedValue(new Error('network error')) });
+    const bridge  = makeBridge({ generate: jest.fn<any>().mockRejectedValue(new Error('network error')) });
     const runtime = makeRuntime();
     const engine  = new DistillationEngine(runtime, bridge);
 
@@ -109,14 +109,14 @@ test('distill throws SSMError(DISTILL_FAILED) when bridge.generate throws', asyn
 
 test('distill throws SSMError(DISTILL_FAILED) when runtime.adapt throws', async () => {
     const bridge  = makeBridge();
-    const runtime = makeRuntime({ adapt: jest.fn().mockRejectedValue(new Error('GPU error')) });
+    const runtime = makeRuntime({ adapt: jest.fn<any>().mockRejectedValue(new Error('GPU error')) });
     const engine  = new DistillationEngine(runtime, bridge);
 
     await expect(engine.distill('prompt')).rejects.toMatchObject({ code: 'DISTILL_FAILED' });
 });
 
 test('distill thrown SSMError has correct code type', async () => {
-    const bridge  = makeBridge({ generate: jest.fn().mockRejectedValue(new Error('fail')) });
+    const bridge  = makeBridge({ generate: jest.fn<any>().mockRejectedValue(new Error('fail')) });
     const runtime = makeRuntime();
 
     let caught: unknown;

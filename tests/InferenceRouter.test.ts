@@ -116,26 +116,26 @@ test('input exactly at threshold routes to ssm', async () => {
 // ── Perplexity probe ──────────────────────────────────────────────────────────
 
 test('high perplexity routes to transformer', async () => {
-    const probe = jest.fn().mockResolvedValue(90);
+    const probe = jest.fn<any>().mockResolvedValue(90);
     const r = router({ strategy: 'auto', perplexityThreshold: 80, perplexityProbe: probe });
     expect(await r.route('what is a quark')).toBe('transformer');
     expect(probe).toHaveBeenCalledWith('what is a quark');
 });
 
 test('low perplexity routes to ssm', async () => {
-    const probe = jest.fn().mockResolvedValue(40);
+    const probe = jest.fn<any>().mockResolvedValue(40);
     const r = router({ strategy: 'auto', perplexityThreshold: 80, perplexityProbe: probe });
     expect(await r.route('what is a quark')).toBe('ssm');
 });
 
 test('perplexity equal to threshold routes to ssm', async () => {
-    const probe = jest.fn().mockResolvedValue(80);
+    const probe = jest.fn<any>().mockResolvedValue(80);
     const r = router({ strategy: 'auto', perplexityThreshold: 80, perplexityProbe: probe });
     expect(await r.route('simple question')).toBe('ssm');
 });
 
 test('ctx.perplexity skips the probe call', async () => {
-    const probe = jest.fn().mockResolvedValue(10);
+    const probe = jest.fn<any>().mockResolvedValue(10);
     const r = router({ strategy: 'auto', perplexityThreshold: 80, perplexityProbe: probe });
     // Pass high perplexity via context — should route to transformer without calling probe
     const result = await r.route('simple', { perplexity: 90 });
@@ -157,7 +157,7 @@ test('custom longInputThreshold is respected', async () => {
 });
 
 test('custom perplexityThreshold is respected', async () => {
-    const probe = jest.fn().mockResolvedValue(55);
+    const probe = jest.fn<any>().mockResolvedValue(55);
     const r = router({ strategy: 'auto', perplexityThreshold: 50, perplexityProbe: probe });
     expect(await r.route('simple question')).toBe('transformer');
 });

@@ -112,7 +112,7 @@ test('clear does not throw when store is already empty', async () => {
 
 test('saveWeights delegates to runtime.save with the weightsKey', async () => {
     const store   = new MemoryStore({ dbName: `test-db-${_dbCounter++}`, weightsKey: 'my-weights' });
-    const runtime = { save: jest.fn().mockResolvedValue(undefined), load: jest.fn() };
+    const runtime = { save: jest.fn<any>().mockResolvedValue(undefined), load: jest.fn<any>() };
 
     await store.saveWeights(runtime);
     expect(runtime.save).toHaveBeenCalledWith(
@@ -122,7 +122,7 @@ test('saveWeights delegates to runtime.save with the weightsKey', async () => {
 
 test('loadWeights delegates to runtime.load with the weightsKey', async () => {
     const store   = new MemoryStore({ dbName: `test-db-${_dbCounter++}`, weightsKey: 'my-weights' });
-    const runtime = { save: jest.fn(), load: jest.fn().mockResolvedValue(false) };
+    const runtime = { save: jest.fn<any>(), load: jest.fn<any>().mockResolvedValue(false) };
 
     const result = await store.loadWeights(runtime);
     expect(runtime.load).toHaveBeenCalledWith(
@@ -133,6 +133,6 @@ test('loadWeights delegates to runtime.load with the weightsKey', async () => {
 
 test('loadWeights returns false when runtime.load returns false', async () => {
     const store   = uniqueStore();
-    const runtime = { save: jest.fn(), load: jest.fn().mockResolvedValue(false) };
+    const runtime = { save: jest.fn<any>(), load: jest.fn<any>().mockResolvedValue(false) };
     expect(await store.loadWeights(runtime)).toBe(false);
 });

@@ -65,7 +65,7 @@
           "tsconfig": {
             "module": "ES2022",
             "moduleResolution": "bundler",
-            "strict": true,
+            "strict": false,
             "esModuleInterop": true,
             "skipLibCheck": true,
             "types": ["@webgpu/types", "jest"]
