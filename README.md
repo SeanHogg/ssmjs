@@ -2,10 +2,10 @@
 
 > **JavaScript-native AI runtime** — SSM execution + Transformer orchestration + online distillation + persistent agent memory.
 
-[![npm](https://img.shields.io/npm/v/ssmjs)](https://www.npmjs.com/package/ssmjs)
+[![npm](https://img.shields.io/npm/v/@seanhogg/ssmjs)](https://www.npmjs.com/package/@seanhogg/ssmjs)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-SSM.js sits as an orchestration layer on top of [MambaKit](https://www.npmjs.com/package/mambakit), extending it into a complete AI runtime.
+SSM.js sits as an orchestration layer on top of [MambaKit](https://www.npmjs.com/package/@seanhogg/mambakit), extending it into a complete AI runtime.
 
 ---
 
