@@ -1,25 +1,15 @@
-name: Publish to npm
+name: Release
 
 on:
-  # Automatically publish when a GitHub Release is published
-  release:
-    types: [published]
-
-  # Allow manual publishing with a configurable dist-tag
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "npm dist-tag (e.g. latest, next, beta)"
-        required: false
-        default: "latest"
+  push:
+    tags: ['v*']
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  # ── Gate: full test suite before publishing ───────────────────────────────
-  test:
-    name: Test (Node.js ${{ matrix.node-version }})
+  release:
+    name: Build, Test & Publish (Node.js ${{ matrix.node-version }})
     runs-on: ubuntu-latest
 
     strategy:
@@ -72,10 +62,9 @@ jobs:
           if [ $missing -eq 1 ]; then exit 1; fi
           echo "✓ All TypeScript declaration files present"
 
-  # ── Publish to npm ────────────────────────────────────────────────────────
   publish:
-    name: Publish to npm
-    needs: test
+    name: Publish to npm & Create GitHub Release
+    needs: release
     runs-on: ubuntu-latest
 
     steps:
@@ -96,20 +85,28 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Stamp version from tag
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "Publishing version: $VERSION"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
       - name: Determine dist-tag
         id: dist_tag
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            if [ "${{ github.event.release.prerelease }}" = "true" ]; then
-              echo "tag=next" >> "$GITHUB_OUTPUT"
-            else
-              echo "tag=latest" >> "$GITHUB_OUTPUT"
-            fi
+          if [[ "${{ github.ref_name }}" == *"-"* ]]; then
+            echo "tag=next" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Publish to npm
         run: npm publish --tag ${{ steps.dist_tag.outputs.tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
