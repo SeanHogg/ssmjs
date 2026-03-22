@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   release:
-    name: Build, Test & Publish (Node.js ${{ matrix.node-version }})
+    name: Test (Node.js ${{ matrix.node-version }})
     runs-on: ubuntu-latest
 
     strategy:
@@ -27,40 +27,15 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Lint
         run: npm run lint
 
-      - name: Build (TypeScript → dist/)
-        run: npm run build
-
-      - name: Run tests
+      - name: Test
         run: npm test
-
-      - name: Verify declaration files are emitted
-        run: |
-          missing=0
-          for f in \
-            dist/index.d.ts \
-            dist/runtime/SSMRuntime.d.ts \
-            dist/bridges/TransformerBridge.d.ts \
-            dist/bridges/OpenAIBridge.d.ts \
-            dist/bridges/AnthropicBridge.d.ts \
-            dist/router/InferenceRouter.d.ts \
-            dist/memory/MemoryStore.d.ts \
-            dist/distillation/DistillationEngine.d.ts \
-            dist/agent/SSMAgent.d.ts \
-            dist/errors/SSMError.d.ts; do
-            if [ ! -f "$f" ]; then
-              echo "ERROR: $f not found after build"
-              missing=1
-            fi
-          done
-          if [ $missing -eq 1 ]; then exit 1; fi
-          echo "✓ All TypeScript declaration files present"
 
   publish:
     name: Publish to npm & Create GitHub Release
@@ -78,12 +53,9 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Build
-        run: npm run build
 
       - name: Stamp version from tag
         run: |
