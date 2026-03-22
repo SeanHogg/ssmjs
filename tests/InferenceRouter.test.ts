@@ -4,6 +4,7 @@
  * No external dependencies — all pure logic.
  */
 
+import { jest } from '@jest/globals';
 import { InferenceRouter } from '../src/router/InferenceRouter.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

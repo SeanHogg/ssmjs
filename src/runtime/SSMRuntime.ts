@@ -21,7 +21,7 @@ import {
     type CreateCallbacks,
 } from '@seanhogg/mambakit';
 
-import { InferenceRouter, type RoutingStrategy, type RouterContext } from '../router/InferenceRouter.js';
+import { InferenceRouter, type RoutingStrategy } from '../router/InferenceRouter.js';
 import type { TransformerBridge, BridgeGenerateOptions } from '../bridges/TransformerBridge.js';
 import { SSMError } from '../errors/SSMError.js';
 

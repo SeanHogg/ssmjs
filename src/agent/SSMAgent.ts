@@ -18,7 +18,7 @@
 
 import type { AdaptOptions, AdaptResult } from '@seanhogg/mambakit';
 import type { SSMRuntime, GenerateOptions } from '../runtime/SSMRuntime.js';
-import type { MemoryStore, MemoryEntry } from '../memory/MemoryStore.js';
+import type { MemoryStore } from '../memory/MemoryStore.js';
 import { SSMError } from '../errors/SSMError.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────

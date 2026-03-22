@@ -6,6 +6,7 @@
 // Install fake IndexedDB globals before importing MemoryStore
 import 'fake-indexeddb/auto';
 
+import { jest } from '@jest/globals';
 import { MemoryStore } from '../src/memory/MemoryStore.js';
 import type { MemoryEntry } from '../src/memory/MemoryStore.js';
 

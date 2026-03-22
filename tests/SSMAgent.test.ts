@@ -3,8 +3,8 @@
  * Unit tests for SSMAgent — prompt building, history, memory, routing.
  */
 
+import { jest } from '@jest/globals';
 import { SSMAgent }     from '../src/agent/SSMAgent.js';
-import { SSMError }     from '../src/errors/SSMError.js';
 import type { SSMRuntime } from '../src/runtime/SSMRuntime.js';
 import type { MemoryStore, MemoryEntry } from '../src/memory/MemoryStore.js';
 

@@ -4,8 +4,8 @@
  * Uses jest.spyOn to mock globalThis.fetch — no real HTTP calls.
  */
 
+import { jest } from '@jest/globals';
 import { AnthropicBridge } from '../src/bridges/AnthropicBridge.js';
-import { SSMError }        from '../src/errors/SSMError.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -13,18 +13,6 @@ function makeJsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), {
         status,
         headers: { 'Content-Type': 'application/json' },
-    });
-}
-
-function makeSSEStream(lines: string[]): ReadableStream<Uint8Array> {
-    const encoder = new TextEncoder();
-    return new ReadableStream({
-        start(controller) {
-            for (const line of lines) {
-                controller.enqueue(encoder.encode(line + '\n'));
-            }
-            controller.close();
-        },
     });
 }
 
@@ -199,7 +187,7 @@ test('stream throws SSMError(BRIDGE_REQUEST_FAILED) on non-OK', async () => {
         new Response('Forbidden', { status: 403 }),
     );
 
-    const gen = new AnthropicBridge({ apiKey: 'key' }).stream('hi');
+    const gen = new AnthropicBridge({ apiKey: 'key' }).stream('hi')[Symbol.asyncIterator]();
     await expect(gen.next()).rejects.toMatchObject({ code: 'BRIDGE_REQUEST_FAILED' });
     fetchSpy.mockRestore();
 });

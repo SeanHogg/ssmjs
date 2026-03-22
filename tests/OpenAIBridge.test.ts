@@ -4,6 +4,7 @@
  * Uses jest.spyOn to mock globalThis.fetch — no real HTTP calls.
  */
 
+import { jest } from '@jest/globals';
 import { OpenAIBridge } from '../src/bridges/OpenAIBridge.js';
 import { FetchBridge }  from '../src/bridges/FetchBridge.js';
 import { SSMError }     from '../src/errors/SSMError.js';
@@ -209,7 +210,7 @@ test('stream throws SSMError(BRIDGE_REQUEST_FAILED) on non-OK response', async (
         new Response('Bad Request', { status: 400 }),
     );
 
-    const gen = new OpenAIBridge({ apiKey: 'key' }).stream('hi');
+    const gen = new OpenAIBridge({ apiKey: 'key' }).stream('hi')[Symbol.asyncIterator]();
     await expect(gen.next()).rejects.toMatchObject({ code: 'BRIDGE_REQUEST_FAILED' });
     fetchSpy.mockRestore();
 });

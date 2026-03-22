@@ -3,6 +3,7 @@
  * Unit tests for DistillationEngine using mock runtime + bridge.
  */
 
+import { jest } from '@jest/globals';
 import { DistillationEngine } from '../src/distillation/DistillationEngine.js';
 import { SSMError }           from '../src/errors/SSMError.js';
 import type { SSMRuntime }    from '../src/runtime/SSMRuntime.js';
