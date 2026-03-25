@@ -7,9 +7,9 @@
  *  - File System Access API
  */
 
-import { MambaKitError } from './errors.js';
+import { SessionError } from './errors.js';
 
-const DB_NAME    = 'mambakit';
+const DB_NAME    = 'ssmjs-session';
 const DB_VERSION = 1;
 const STORE_NAME = 'checkpoints';
 
@@ -19,7 +19,7 @@ function openDB(idb?: IDBFactory): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
         const factory = idb ?? (typeof indexedDB !== 'undefined' ? indexedDB : undefined);
         if (!factory) {
-            reject(new MambaKitError(
+            reject(new SessionError(
                 'STORAGE_UNAVAILABLE',
                 'IndexedDB is not available in this environment. Pass an idbFactory option (e.g. from fake-indexeddb) for Node.js support.',
             ));
@@ -36,7 +36,7 @@ function openDB(idb?: IDBFactory): Promise<IDBDatabase> {
         };
 
         req.onsuccess = () => resolve(req.result);
-        req.onerror   = ()  => reject(new MambaKitError(
+        req.onerror   = ()  => reject(new SessionError(
             'STORAGE_UNAVAILABLE',
             `Failed to open IndexedDB database "${DB_NAME}": ${req.error?.message ?? 'unknown error'}`,
             req.error,
@@ -52,7 +52,7 @@ export async function saveToIndexedDB(key: string, buffer: ArrayBuffer, idb?: ID
         const req   = store.put(buffer, key);
 
         req.onsuccess = () => resolve();
-        req.onerror   = () => reject(new MambaKitError(
+        req.onerror   = () => reject(new SessionError(
             'STORAGE_UNAVAILABLE',
             `Failed to write checkpoint to IndexedDB (key="${key}"): ${req.error?.message ?? 'unknown error'}`,
             req.error,
@@ -72,7 +72,7 @@ export async function loadFromIndexedDB(key: string, idb?: IDBFactory): Promise<
             db.close();
             resolve(req.result as ArrayBuffer | undefined);
         };
-        req.onerror = () => reject(new MambaKitError(
+        req.onerror = () => reject(new SessionError(
             'STORAGE_UNAVAILABLE',
             `Failed to read checkpoint from IndexedDB (key="${key}"): ${req.error?.message ?? 'unknown error'}`,
             req.error,
@@ -108,7 +108,7 @@ export async function saveViaFileSystemAPI(filename: string, buffer: ArrayBuffer
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const win = window as any;
     if (typeof win.showSaveFilePicker !== 'function') {
-        throw new MambaKitError(
+        throw new SessionError(
             'STORAGE_UNAVAILABLE',
             'File System Access API (showSaveFilePicker) is not available in this browser.',
         );
@@ -127,7 +127,7 @@ export async function loadViaFileSystemAPI(): Promise<ArrayBuffer> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const win = window as any;
     if (typeof win.showOpenFilePicker !== 'function') {
-        throw new MambaKitError(
+        throw new SessionError(
             'STORAGE_UNAVAILABLE',
             'File System Access API (showOpenFilePicker) is not available in this browser.',
         );

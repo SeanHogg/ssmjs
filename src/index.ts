@@ -17,12 +17,12 @@
  *   const answer = await ai.generate('How does MambaKit work?');
  */
 
-// ── Session layer (absorbed from @seanhogg/mambakit) ─────────────────────────
+// ── Session layer ─────────────────────────────────────────────────────────────
 export { MambaSession }              from './session/index.js';
-export { MambaKitError }             from './session/index.js';
+export { SessionError }              from './session/index.js';
 export { MODEL_PRESETS, resolveLayerSchedule, resolveModelConfig } from './session/index.js';
 
-export type { MambaKitErrorCode }    from './session/index.js';
+export type { SessionErrorCode }     from './session/index.js';
 export type { LayerSchedulePreset }  from './session/index.js';
 export type {
     MambaSessionOptions,
@@ -102,7 +102,7 @@ export const SSM = {
      * Creates a new SSMRuntime.
      *
      * Shorthand for `SSMRuntime.create(opts)`.
-     * Can throw `MambaKitError` for GPU / tokenizer failures during init.
+     * Can throw `SessionError` for GPU / tokenizer failures during init.
      */
     create: (opts: SSMRuntimeOptions) => SSMRuntime.create(opts),
 } as const;

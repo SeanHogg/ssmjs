@@ -1,10 +1,9 @@
 /**
- * SSMError – typed error class for SSM.js.
+ * SSMError – typed error class for SSM.js runtime-level failures.
  *
- * Mirrors MambaKitError in shape so callers can handle both with the same
- * `err.code` pattern. MambaKitError can propagate unchanged through
- * SSMRuntime.create() for GPU / tokenizer failures; SSM.js-level failures
- * throw SSMError.
+ * Session-layer failures (GPU init, tokenizer, checkpoint) throw SessionError.
+ * Runtime-level failures (bridge, distillation, memory) throw SSMError.
+ * Both carry a typed `code` discriminant for programmatic handling.
  */
 
 export type SSMErrorCode =

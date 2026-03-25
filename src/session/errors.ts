@@ -1,8 +1,8 @@
 /**
- * errors.ts – Typed error class for the MambaSession layer (absorbed from MambaKit).
+ * errors.ts – Typed error class for the MambaSession layer.
  */
 
-export type MambaKitErrorCode =
+export type SessionErrorCode =
     | 'GPU_UNAVAILABLE'          // navigator.gpu not present or adapter request failed
     | 'TOKENIZER_LOAD_FAILED'    // vocab.json or merges.txt could not be fetched/parsed
     | 'CHECKPOINT_FETCH_FAILED'  // checkpoint URL returned non-OK response after retries
@@ -12,13 +12,13 @@ export type MambaKitErrorCode =
     | 'SESSION_DESTROYED'        // method called after destroy()
     | 'UNKNOWN';                 // unexpected error (original in .cause)
 
-export class MambaKitError extends Error {
+export class SessionError extends Error {
     constructor(
-        public readonly code: MambaKitErrorCode,
+        public readonly code: SessionErrorCode,
         message: string,
         public readonly cause?: unknown,
     ) {
         super(message);
-        this.name = 'MambaKitError';
+        this.name = 'SessionError';
     }
 }

@@ -4,7 +4,7 @@
  * MambaSession is a facade over MambaCode.js that collapses the 8-step
  * async setup sequence into a single `MambaSession.create()` call.
  *
- * Originally part of @seanhogg/mambakit; absorbed into @seanhogg/ssmjs.
+ * Part of the @seanhogg/ssmjs session layer.
  */
 
 import {
@@ -17,7 +17,7 @@ import {
     type LayerType,
 } from '@seanhogg/mambacode.js';
 
-import { MambaKitError } from './errors.js';
+import { SessionError } from './errors.js';
 import type { Tokenizer } from './tokenizer.js';
 
 // ── Opinionated defaults ───────────────────────────────────────────────────────
@@ -262,7 +262,7 @@ export class MambaSession {
             try {
                 device = await options.gpuAdapter.requestDevice();
             } catch (err) {
-                throw new MambaKitError(
+                throw new SessionError(
                     'GPU_UNAVAILABLE',
                     `Failed to acquire GPUDevice from provided gpuAdapter: ${(err as Error).message}`,
                     err,
@@ -277,7 +277,7 @@ export class MambaSession {
                 device = result.device;
             } catch (primaryErr) {
                 if (!options.allowCpuFallback) {
-                    throw new MambaKitError(
+                    throw new SessionError(
                         'GPU_UNAVAILABLE',
                         `WebGPU initialisation failed: ${(primaryErr as Error).message}. ` +
                         `Set allowCpuFallback: true to attempt a software (CPU) fallback.`,
@@ -292,7 +292,7 @@ export class MambaSession {
                     `attempting CPU software fallback — performance will be degraded.`);
 
                 if (typeof navigator === 'undefined' || !navigator.gpu) {
-                    throw new MambaKitError(
+                    throw new SessionError(
                         'GPU_UNAVAILABLE',
                         'WebGPU is not available in this environment and no software adapter can be requested.',
                         primaryErr,
@@ -308,7 +308,7 @@ export class MambaSession {
                     device   = await fallbackAdapter.requestDevice();
                     gpuMode  = 'cpu-fallback';
                 } catch (fallbackErr) {
-                    throw new MambaKitError(
+                    throw new SessionError(
                         'GPU_UNAVAILABLE',
                         `WebGPU unavailable and CPU fallback failed: ${(fallbackErr as Error).message}`,
                         fallbackErr,
@@ -343,7 +343,7 @@ export class MambaSession {
                     await tokenizer.load(vocabUrl, mergesUrl);
                 }
             } catch (err) {
-                throw new MambaKitError(
+                throw new SessionError(
                     'TOKENIZER_LOAD_FAILED',
                     `Tokenizer failed to load: ${(err as Error).message}`,
                     err,
@@ -383,7 +383,7 @@ export class MambaSession {
             }
 
             if (buffer == null) {
-                throw new MambaKitError(
+                throw new SessionError(
                     'CHECKPOINT_FETCH_FAILED',
                     `Failed to fetch checkpoint from "${options.checkpointUrl}" after ${fetchRetries + 1} attempt(s): ${(lastErr as Error).message}`,
                     lastErr,
@@ -393,7 +393,7 @@ export class MambaSession {
             try {
                 await model.loadWeights(buffer);
             } catch (err) {
-                throw new MambaKitError(
+                throw new SessionError(
                     'CHECKPOINT_INVALID',
                     `Checkpoint file is invalid or incompatible: ${(err as Error).message}`,
                     err,
@@ -477,7 +477,7 @@ export class MambaSession {
 
         const encoded = this._tokenizer.encode(text);
         if (encoded.length < 2) {
-            throw new MambaKitError(
+            throw new SessionError(
                 'INPUT_TOO_SHORT',
                 'The input text encodes to fewer than 2 tokens and cannot be used for training.',
             );
@@ -528,7 +528,7 @@ export class MambaSession {
                 await saveViaFileSystemAPI(filename, buffer);
                 break;
             default:
-                throw new MambaKitError('STORAGE_UNAVAILABLE', `Unknown storage target: "${storage as string}"`);
+                throw new SessionError('STORAGE_UNAVAILABLE', `Unknown storage target: "${storage as string}"`);
         }
     }
 
@@ -553,14 +553,14 @@ export class MambaSession {
                 // Treat any other string as a URL fetch (covers custom `url` option)
                 const url = options.url;
                 if (!url) {
-                    throw new MambaKitError(
+                    throw new SessionError(
                         'STORAGE_UNAVAILABLE',
                         'load() with storage other than "indexedDB" or "fileSystem" requires a url option.',
                     );
                 }
                 const res = await fetch(url);
                 if (!res.ok) {
-                    throw new MambaKitError(
+                    throw new SessionError(
                         'CHECKPOINT_FETCH_FAILED',
                         `Failed to fetch checkpoint from "${url}": HTTP ${res.status}`,
                     );
@@ -574,7 +574,7 @@ export class MambaSession {
         try {
             await this._model.loadWeights(buffer);
         } catch (err) {
-            throw new MambaKitError(
+            throw new SessionError(
                 'CHECKPOINT_INVALID',
                 `Saved checkpoint is invalid or incompatible: ${(err as Error).message}`,
                 err,
@@ -607,7 +607,7 @@ export class MambaSession {
 
     private _assertNotDestroyed(): void {
         if (this._destroyed) {
-            throw new MambaKitError(
+            throw new SessionError(
                 'SESSION_DESTROYED',
                 'This MambaSession has been destroyed. Create a new session with MambaSession.create().',
             );

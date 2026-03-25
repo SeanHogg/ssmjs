@@ -1,13 +1,11 @@
 /**
  * MemoryStore – persistent key-value fact store and weight checkpoint helper.
  *
- * Uses IndexedDB with a dedicated 'ssmjs' database (separate from mambakit's
- * 'mambakit' DB) containing two object stores:
+ * Uses IndexedDB with a dedicated 'ssmjs' database containing two object stores:
  *   - 'facts'   : MemoryEntry records keyed by the fact key string
  *   - 'weights' : a single ArrayBuffer keyed by `weightsKey`
  *
- * MemoryStore does not import mambakit directly — weight save/load is
- * delegated to the SSMRuntime passed to saveWeights/loadWeights.
+ * Weight save/load is delegated to the SSMRuntime passed to saveWeights/loadWeights.
  */
 
 import { SSMError } from '../errors/SSMError.js';

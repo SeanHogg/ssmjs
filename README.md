@@ -386,7 +386,7 @@ npm install @seanhogg/mambakit @seanhogg/ssmjs
 ```
 
 ```ts
-import { MambaSession, MambaKitError } from '@seanhogg/mambakit';
+import { MambaSession } from '@seanhogg/mambakit';
 import type { MambaSessionOptions, Tokenizer } from '@seanhogg/mambakit';
 ```
 
@@ -397,7 +397,7 @@ npm install @seanhogg/ssmjs
 ```
 
 ```ts
-import { MambaSession, MambaKitError } from '@seanhogg/ssmjs';
+import { MambaSession, SessionError } from '@seanhogg/ssmjs';
 import type { MambaSessionOptions, Tokenizer } from '@seanhogg/ssmjs';
 ```
 
@@ -436,7 +436,7 @@ GPU init is optional: if `@webgpu/node` is unavailable, the service starts in me
 ## Phase Roadmap
 
 ### Phase 1 — Foundations
-- MambaKit: `Tokenizer` interface + pluggable injection via `MambaSessionOptions.tokenizer`
+- Session layer: `Tokenizer` interface + pluggable injection via `MambaSessionOptions.tokenizer`
 - `MemoryStore`: TTL (`ttlMs`), `defaultTtlMs`, `purgeExpired()`, `recallRecent(n)`
 - `MemoryStore`: `FactType`, `tags`, `importance` fields on `MemoryEntry`
 - `MemoryStore`: updated `remember()` accepting `RememberOptions`
@@ -510,18 +510,18 @@ Releases GPU device and all buffers.
 ## Error Handling
 
 ```ts
-import { SSMError, MambaKitError } from '@seanhogg/ssmjs';
+import { SSMError, SessionError } from '@seanhogg/ssmjs';
 
 try {
   const runtime = await SSM.create({ session: { modelSize: 'nano' } });
   await runtime.generate('hello');
 } catch (err) {
   if (err instanceof SSMError) {
-    // SSM.js-level error
+    // Runtime-level error (bridge, distillation, memory)
     console.error(err.code);  // 'BRIDGE_REQUEST_FAILED' | 'RUNTIME_DESTROYED' | ...
   }
-  if (err instanceof MambaKitError) {
-    // Propagated from MambaSession (GPU / tokenizer failure)
+  if (err instanceof SessionError) {
+    // Session-level error (GPU init, tokenizer, checkpoint)
     console.error(err.code);  // 'GPU_UNAVAILABLE' | 'TOKENIZER_LOAD_FAILED' | ...
   }
 }
@@ -540,7 +540,7 @@ src/
 │   ├── presets.ts                    ← MODEL_PRESETS + layer schedule resolution
 │   ├── persistence.ts                ← IndexedDB / download / File System API helpers
 │   ├── streaming.ts                  ← AsyncIterable token streaming
-│   ├── errors.ts                     ← MambaKitError typed error class
+│   ├── errors.ts                     ← SessionError typed error class
 │   └── index.ts                      ← barrel export
 ├── runtime/
 │   └── SSMRuntime.ts                 ← core runtime, owns MambaSession

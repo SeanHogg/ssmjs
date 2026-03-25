@@ -96,7 +96,7 @@ export class SSMRuntime {
     /**
      * Creates and initialises a new SSMRuntime.
      *
-     * Delegates to MambaSession.create() — can throw MambaKitError for
+     * Delegates to MambaSession.create() — can throw SessionError for
      * GPU / tokenizer failures.
      */
     static async create(opts: SSMRuntimeOptions): Promise<SSMRuntime> {
