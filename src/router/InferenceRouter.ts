@@ -7,11 +7,24 @@
  *   2. Input length         — char count proxy for token count (synchronous, zero cost)
  *   3. Perplexity probe     — async SSM evaluate(); only runs when 1 & 2 are inconclusive
  *
- * When no bridge is available the router always returns 'ssm'.
+ * When no bridge is available the router always returns target='ssm'.
  */
 
 export type RoutingStrategy = 'auto' | 'ssm' | 'transformer';
-export type RoutingDecision = 'ssm' | 'transformer';
+
+/**
+ * The structured result of a routing decision.
+ */
+export interface RoutingDecision {
+    /** Which model should handle this input. */
+    target     : 'ssm' | 'transformer';
+    /** The primary heuristic that triggered this decision. */
+    reason     : 'strategy' | 'complexity' | 'length' | 'perplexity' | 'no_bridge';
+    /** Confidence score in the range 0–1. */
+    confidence : number;
+    /** Optional human-readable explanation. */
+    details?   : string;
+}
 
 export interface RouterContext {
     /**
@@ -19,6 +32,13 @@ export interface RouterContext {
      * Providing this skips the async perplexity probe in auto mode.
      */
     perplexity?: number;
+}
+
+export interface RoutingAuditEntry {
+    timestamp  : number;
+    inputLength: number;
+    decision   : RoutingDecision;
+    durationMs : number;
 }
 
 export interface InferenceRouterOptions {
@@ -76,12 +96,16 @@ const COMPLEXITY_PATTERNS: RegExp[] = [
     /\bwhat\s+are\s+the\s+(key|main|top)\s+(difference|reason|factor)/i,
 ];
 
+/** Maximum audit log entries to keep in memory. */
+const MAX_AUDIT_LOG = 500;
+
 export class InferenceRouter {
     private readonly _strategy           : RoutingStrategy;
     private readonly _longInputThreshold : number;
     private readonly _perplexityThreshold: number;
     private readonly _hasBridge          : boolean;
     private readonly _perplexityProbe    : ((text: string) => Promise<number>) | undefined;
+    private readonly _auditLog           : RoutingAuditEntry[] = [];
 
     constructor(opts: InferenceRouterOptions = {}) {
         this._strategy            = opts.strategy            ?? 'auto';
@@ -92,34 +116,86 @@ export class InferenceRouter {
     }
 
     /**
-     * Routes `input` to either 'ssm' or 'transformer'.
+     * Routes `input` to either SSM or transformer and returns a RoutingDecision.
      *
-     * Always returns 'ssm' when no bridge is attached, regardless of strategy.
+     * Always returns target='ssm' when no bridge is attached, regardless of strategy.
      */
     async route(input: string, ctx: RouterContext = {}): Promise<RoutingDecision> {
+        const startMs = Date.now();
+        const decision = await this._decide(input, ctx);
+        const durationMs = Date.now() - startMs;
+
+        const auditEntry: RoutingAuditEntry = {
+            timestamp  : Date.now(),
+            inputLength: input.length,
+            decision,
+            durationMs,
+        };
+        this._auditLog.push(auditEntry);
+        if (this._auditLog.length > MAX_AUDIT_LOG) {
+            this._auditLog.shift();
+        }
+
+        return decision;
+    }
+
+    /** Returns a copy of the in-memory routing audit log (most recent last). */
+    getAuditLog(): RoutingAuditEntry[] {
+        return this._auditLog.slice();
+    }
+
+    // ── Private routing logic ─────────────────────────────────────────────────
+
+    private async _decide(input: string, ctx: RouterContext): Promise<RoutingDecision> {
         // No bridge → always SSM
-        if (!this._hasBridge) return 'ssm';
+        if (!this._hasBridge) {
+            return { target: 'ssm', reason: 'no_bridge', confidence: 1.0 };
+        }
 
         // Fixed-strategy overrides
-        if (this._strategy === 'ssm')         return 'ssm';
-        if (this._strategy === 'transformer') return 'transformer';
+        if (this._strategy === 'ssm') {
+            return { target: 'ssm', reason: 'strategy', confidence: 1.0 };
+        }
+        if (this._strategy === 'transformer') {
+            return { target: 'transformer', reason: 'strategy', confidence: 1.0 };
+        }
 
         // Auto heuristics ────────────────────────────────────────────────────
 
         // 1. Complexity patterns (synchronous)
-        if (COMPLEXITY_PATTERNS.some(p => p.test(input))) return 'transformer';
+        const matchedPattern = COMPLEXITY_PATTERNS.find(p => p.test(input));
+        if (matchedPattern) {
+            return {
+                target    : 'transformer',
+                reason    : 'complexity',
+                confidence: 0.9,
+                details   : `Matched pattern: ${matchedPattern.source}`,
+            };
+        }
 
         // 2. Input length (synchronous)
-        if (input.length > this._longInputThreshold) return 'transformer';
+        if (input.length > this._longInputThreshold) {
+            return {
+                target    : 'transformer',
+                reason    : 'length',
+                confidence: 0.85,
+                details   : `Input length ${input.length} exceeds threshold ${this._longInputThreshold}`,
+            };
+        }
 
         // 3. Perplexity probe (async) — only if probe function provided
         const perplexity = ctx.perplexity ??
             (this._perplexityProbe ? await this._perplexityProbe(input) : undefined);
 
         if (perplexity !== undefined && perplexity > this._perplexityThreshold) {
-            return 'transformer';
+            return {
+                target    : 'transformer',
+                reason    : 'perplexity',
+                confidence: Math.min(0.95, 0.5 + (perplexity - this._perplexityThreshold) / 200),
+                details   : `SSM perplexity ${perplexity.toFixed(1)} exceeds threshold ${this._perplexityThreshold}`,
+            };
         }
 
-        return 'ssm';
+        return { target: 'ssm', reason: 'complexity', confidence: 0.8 };
     }
 }

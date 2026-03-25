@@ -11,12 +11,26 @@
  *   3. Return both results for inspection
  */
 
-import type { AdaptOptions, AdaptResult } from '@seanhogg/mambakit';
+import type { AdaptOptions, AdaptResult } from '../session/index.js';
 import type { SSMRuntime } from '../runtime/SSMRuntime.js';
 import type { TransformerBridge, BridgeGenerateOptions } from '../bridges/TransformerBridge.js';
 import { SSMError } from '../errors/SSMError.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface QualityGate {
+    /**
+     * Minimum character length of the teacher output.
+     * Outputs shorter than this are considered low quality and are skipped.
+     */
+    minLength?     : number;
+    /**
+     * Maximum SSM perplexity threshold.
+     * When the SSM already achieves perplexity below this value on the teacher
+     * output, the content is considered already learned and adaptation is skipped.
+     */
+    maxPerplexity? : number;
+}
 
 export interface DistillOptions {
     /**
@@ -25,12 +39,18 @@ export interface DistillOptions {
      * WSLA is preferred because it is fast and targets the selective
      * projection rows — exactly the parameters that encode token routing.
      */
-    adapt?    : AdaptOptions;
+    adapt?       : AdaptOptions;
 
     /**
      * Options forwarded to `bridge.generate()`.
      */
-    generate? : BridgeGenerateOptions;
+    generate?    : BridgeGenerateOptions;
+
+    /**
+     * Quality gate filters that can skip adaptation for low-quality or
+     * already-learned inputs.
+     */
+    qualityGate? : QualityGate;
 }
 
 export interface DistillResult {
@@ -40,6 +60,10 @@ export interface DistillResult {
     teacherOutput: string;
     /** The adapt() result from training the SSM on the teacher output. */
     adaptResult  : AdaptResult;
+    /** Whether adaptation was skipped by the quality gate. */
+    skipped?     : boolean;
+    /** Reason adaptation was skipped, if applicable. */
+    skipReason?  : string;
 }
 
 export interface DistillBatchResult {
@@ -50,11 +74,25 @@ export interface DistillBatchResult {
     totalMs    : number;
 }
 
+export interface DistillationLog {
+    timestamp          : number;
+    input              : string;
+    teacherOutputLength: number;
+    skipped            : boolean;
+    skipReason?        : string;
+    finalLoss?         : number;
+    epochs             : number;
+}
+
+/** Maximum number of distillation log entries to retain in memory. */
+const MAX_LOG_ENTRIES = 200;
+
 // ── DistillationEngine ────────────────────────────────────────────────────────
 
 export class DistillationEngine {
-    private readonly _runtime: SSMRuntime;
-    private readonly _bridge : TransformerBridge;
+    private readonly _runtime  : SSMRuntime;
+    private readonly _bridge   : TransformerBridge;
+    private readonly _log      : DistillationLog[] = [];
 
     /**
      * @param runtime The SSMRuntime whose SSM will be trained as the student.
@@ -69,7 +107,8 @@ export class DistillationEngine {
     /**
      * Runs a single distillation pass:
      *   1. Teacher generates a response for `input`
-     *   2. SSM is adapted on the teacher's output (WSLA by default)
+     *   2. Quality gate is evaluated (if configured)
+     *   3. SSM is adapted on the teacher's output (WSLA by default)
      *
      * The training signal is the teacher's full response — this teaches the
      * SSM what a good response to that prompt looks like, without requiring
@@ -93,6 +132,56 @@ export class DistillationEngine {
             );
         }
 
+        // ── Quality gate ──────────────────────────────────────────────────────
+
+        if (opts.qualityGate) {
+            const gate = opts.qualityGate;
+
+            if (gate.minLength != null && teacherOutput.length < gate.minLength) {
+                const result: DistillResult = {
+                    input,
+                    teacherOutput,
+                    adaptResult : { losses: [], epochCount: 0, durationMs: 0 },
+                    skipped     : true,
+                    skipReason  : 'low_quality',
+                };
+                this._appendLog({
+                    input,
+                    teacherOutputLength: teacherOutput.length,
+                    skipped    : true,
+                    skipReason : 'low_quality',
+                    epochs     : 0,
+                });
+                return result;
+            }
+
+            if (gate.maxPerplexity != null) {
+                let perplexity: number | undefined;
+                try {
+                    perplexity = await this._runtime.evaluate(teacherOutput);
+                } catch {
+                    // Evaluation failure is non-fatal — proceed with adaptation
+                }
+                if (perplexity != null && perplexity < gate.maxPerplexity) {
+                    const result: DistillResult = {
+                        input,
+                        teacherOutput,
+                        adaptResult : { losses: [], epochCount: 0, durationMs: 0 },
+                        skipped     : true,
+                        skipReason  : 'already_learned',
+                    };
+                    this._appendLog({
+                        input,
+                        teacherOutputLength: teacherOutput.length,
+                        skipped    : true,
+                        skipReason : 'already_learned',
+                        epochs     : 0,
+                    });
+                    return result;
+                }
+            }
+        }
+
         // Train the SSM on the teacher's output.
         // Prepend the input so the model learns the (prompt → response) mapping.
         const trainingText = `${input}\n${teacherOutput}`;
@@ -108,7 +197,15 @@ export class DistillationEngine {
             );
         }
 
-        return { input, teacherOutput, adaptResult };
+        this._appendLog({
+            input,
+            teacherOutputLength: teacherOutput.length,
+            skipped    : false,
+            finalLoss  : adaptResult.losses.at(-1),
+            epochs     : adaptResult.epochCount,
+        });
+
+        return { input, teacherOutput, adaptResult, skipped: false };
     }
 
     /**
@@ -131,5 +228,21 @@ export class DistillationEngine {
             totalEpochs,
             totalMs: Date.now() - startMs,
         };
+    }
+
+    /**
+     * Returns a copy of the in-memory distillation log (last 200 entries).
+     */
+    getLog(): DistillationLog[] {
+        return this._log.slice();
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    private _appendLog(entry: Omit<DistillationLog, 'timestamp'>): void {
+        this._log.push({ timestamp: Date.now(), ...entry });
+        if (this._log.length > MAX_LOG_ENTRIES) {
+            this._log.shift();
+        }
     }
 }

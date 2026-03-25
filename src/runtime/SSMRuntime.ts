@@ -19,9 +19,10 @@ import {
     type SaveOptions,
     type LoadOptions,
     type CreateCallbacks,
-} from '@seanhogg/mambakit';
+} from '../session/index.js';
 
-import { InferenceRouter, type RoutingStrategy } from '../router/InferenceRouter.js';
+import { InferenceRouter, type RoutingStrategy, type RoutingAuditEntry } from '../router/InferenceRouter.js';
+import type { DistillationLog } from '../distillation/DistillationEngine.js';
 import type { TransformerBridge, BridgeGenerateOptions } from '../bridges/TransformerBridge.js';
 import { SSMError } from '../errors/SSMError.js';
 
@@ -126,7 +127,7 @@ export class SSMRuntime {
 
         const decision = await this._router.route(input);
 
-        if (decision === 'transformer' && this._bridge) {
+        if (decision.target === 'transformer' && this._bridge) {
             return this._bridge.generate(input, opts.bridgeOpts);
         }
 
@@ -157,7 +158,7 @@ export class SSMRuntime {
 
         const decision = await this._router.route(input);
 
-        if (decision === 'transformer' && this._bridge) {
+        if (decision.target === 'transformer' && this._bridge) {
             if (this._bridge.supportsStreaming && this._bridge.stream) {
                 yield* this._bridge.stream(input, opts.bridgeOpts);
             } else {
@@ -211,6 +212,26 @@ export class SSMRuntime {
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
+
+    /**
+     * Returns a copy of the in-memory routing audit log.
+     * Delegates to the internal InferenceRouter.
+     */
+    getRoutingAuditLog(): RoutingAuditEntry[] {
+        return this._router.getAuditLog();
+    }
+
+    /**
+     * Returns the distillation log if a DistillationEngine has been attached.
+     * Returns an empty array when no distillation engine is available.
+     *
+     * Note: DistillationEngine is a separate object — attach it by calling
+     *   `new DistillationEngine(runtime, bridge)` and keeping a reference.
+     *   This method is a stub for future inline engine support.
+     */
+    getDistillationLog(): DistillationLog[] {
+        return [];
+    }
 
     /** The transformer bridge attached to this runtime, if any. */
     get bridge(): TransformerBridge | undefined { return this._bridge; }

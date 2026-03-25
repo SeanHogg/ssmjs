@@ -5,324 +5,463 @@
 [![npm](https://img.shields.io/npm/v/@seanhogg/ssmjs)](https://www.npmjs.com/package/@seanhogg/ssmjs)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-SSM.js sits as an orchestration layer on top of [MambaKit](https://www.npmjs.com/package/@seanhogg/mambakit), extending it into a complete AI runtime.
+SSM.js is a complete, self-contained AI runtime built directly on top of [MambaCode.js](https://www.npmjs.com/package/@seanhogg/mambacode.js). It includes the full session layer (previously `@seanhogg/mambakit`) as an internal layer, so you only need one package.
 
 ---
 
-## Layer Stack
+## Overview
+
+SSM.js is a JavaScript-native AI runtime that combines local SSM (State Space Model) inference with optional transformer bridge escalation, persistent semantic memory, and online distillation — all without leaving the browser or Node.js process.
+
+The layered stack:
 
 ```
 MambaCode.js  →  WebGPU kernels (WGSL, Mamba-1/2/3 SSM math)
-MambaKit      →  Model / session abstraction (MambaSession.create())
-SSM.js        →  Runtime orchestration (this package)
+SSM.js        →  Session layer + Runtime orchestration (this package)
+                 ├── src/session/   MambaSession, tokenizer, persistence
+                 ├── src/runtime/   SSMRuntime, routing
+                 ├── src/memory/    MemoryStore
+                 ├── src/agent/     SSMAgent
+                 └── src/distillation/  DistillationEngine
 ```
 
----
-
-## What's New Over MambaKit
-
-| Capability                   | MambaKit | SSM.js |
-|------------------------------|----------|--------|
-| Simple session API           | ✅       | ✅     |
-| WebGPU execution             | ✅       | ✅     |
-| SSM variants (1/2/3/hybrid)  | ✅       | ✅     |
-| Transformer bridge           | ❌       | ✅     |
-| Intelligent routing          | ❌       | ✅     |
-| Online distillation          | ❌       | ✅     |
-| Persistent semantic memory   | ⚠️       | ✅     |
-| Agent workflows              | ❌       | ✅     |
+| Capability                   | SSM.js |
+|------------------------------|--------|
+| Simple session API           | ✅     |
+| WebGPU execution             | ✅     |
+| SSM variants (1/2/3/hybrid)  | ✅     |
+| Transformer bridge           | ✅     |
+| Intelligent routing          | ✅     |
+| Online distillation          | ✅     |
+| Persistent semantic memory   | ✅     |
+| Agent workflows              | ✅     |
 
 ---
 
-## Quick Start
+## Installation
 
-```ts
-import { SSM, AnthropicBridge, SSMAgent, MemoryStore } from 'ssmjs';
-
-const ai = await SSM.create({
-  session: { modelSize: 'small', mambaVersion: 'mamba2' },
-  bridge : new AnthropicBridge({ apiKey: 'sk-ant-...' }),
-});
-
-// Generate — routes to SSM or transformer automatically
-const answer = await ai.generate('What is a state space model?');
-
-// Streaming — always SSM for low-latency output
-for await (const token of ai.stream('function fibonacci(')) {
-  process.stdout.write(token);
-}
-
-// Fine-tune on your content (browser, no data leaves)
-await ai.adapt(myCodebase);
+```bash
+npm install @seanhogg/ssmjs
+# or
+pnpm add @seanhogg/ssmjs
 ```
 
----
+`@seanhogg/ssmjs` includes the full session layer (previously `@seanhogg/mambakit`).
+`@seanhogg/mambacode.js` is a peer dependency — install it alongside:
 
-## Node.js / Server-Side Usage
+```bash
+npm install @seanhogg/ssmjs @seanhogg/mambacode.js
+```
 
-SSM.js and MambaKit are browser-first, but can run natively in Node.js by injecting a WebGPU adapter and an IndexedDB factory. This is how [CoderClaw](https://coderclaw.ai) loads user-trained `.bin` models as a local hippocampus.
+### Node.js requirements
 
-**Install the Node.js shims:**
+Node.js 18+ is required. Two additional shims are needed for Node.js:
 
 ```bash
 npm install @webgpu/node fake-indexeddb
 ```
 
-**Usage:**
+- `@webgpu/node` — Dawn-based WebGPU for Node.js; drives all WGSL compute kernels
+- `fake-indexeddb` — in-memory IndexedDB compatible with the IDB spec; used by `MemoryStore`
+
+---
+
+## Quick Start
+
+### Browser
+
+```ts
+import { SSM, AnthropicBridge, SSMAgent, MemoryStore } from '@seanhogg/ssmjs';
+
+const runtime = await SSM.create({
+  session: { modelSize: 'small', mambaVersion: 'mamba2' },
+  bridge : new AnthropicBridge({ apiKey: 'sk-ant-...' }),
+});
+
+// Generate — routes to SSM or transformer automatically
+const answer = await runtime.generate('What is a state space model?');
+
+// Streaming — always SSM for low-latency output
+for await (const token of runtime.stream('function fibonacci(')) {
+  process.stdout.write(token);
+}
+
+// Fine-tune on your content
+await runtime.adapt(myCodebase);
+runtime.destroy();
+```
+
+### Node.js
 
 ```ts
 import { create as createGPU } from '@webgpu/node';
 import { IDBFactory }          from 'fake-indexeddb';
-import { SSM, MemoryStore }    from 'ssmjs';
+import { SSM, MemoryStore, SSMAgent } from '@seanhogg/ssmjs';
 
-// Obtain a WebGPU adapter from @webgpu/node (Google's Dawn implementation)
 const gpuAdapter = await createGPU().requestAdapter({ powerPreference: 'high-performance' });
 const idbFactory = new IDBFactory();
 
 const runtime = await SSM.create({
   session: {
-    gpuAdapter,                        // injected — skips navigator.gpu entirely
-    idbFactory,                        // injected — skips globalThis.indexedDB
-    checkpointUrl: '.coderClaw/model.bin',  // path to a user-trained .bin
-    modelSize    : 'small',
-    mambaVersion : 'mamba2',
+    gpuAdapter,
+    idbFactory,
+    modelSize: 'small',
   },
-  bridge: myFrontierLLMBridge,         // cortex: Claude / GPT-4 / Ollama
 });
 
-// MemoryStore also accepts idbFactory for Node.js
 const memory = new MemoryStore({ idbFactory });
+const agent  = new SSMAgent({ runtime, memory });
+await agent.init();   // loads persisted history if present
 
-for await (const token of runtime.stream('Explain this codebase:')) {
-  process.stdout.write(token);
-}
+const reply = await agent.think('Explain this codebase');
+console.log(reply);
+
+await agent.destroy(); // persists history, releases GPU
 ```
-
-**Requirements:**
-- Node.js 18+
-- `@webgpu/node` — Dawn-based WebGPU for Node.js; supports all WGSL compute kernels used by MambaKit
-- `fake-indexeddb` — in-memory IndexedDB compatible with the IDB spec; already used in SSM.js tests
-
-**What works in Node.js:**
-- ✅ Model inference (`generate`, `stream`, `streamHybrid`)
-- ✅ Fine-tuning / WSLA adaptation (`adapt`)
-- ✅ Distillation (`DistillationEngine`)
-- ✅ `MemoryStore` (fact storage + weight persistence via `fake-indexeddb`)
-- ❌ `storage: 'download'` — browser Blob URL download not available
-- ❌ `storage: 'fileSystem'` — File System Access API not available; use `checkpointUrl` with a local file path instead
 
 ---
 
-## Core Concepts
+## Custom Tokenizers
 
-### SSMRuntime
-
-The central runtime object. Wraps a `MambaSession` and adds routing, bridging, and lifecycle management.
+By default, `MambaSession` uses the built-in Qwen2.5-Coder BPE tokenizer.  You can override this by passing any object that satisfies the `Tokenizer` interface:
 
 ```ts
-import { SSMRuntime } from 'ssmjs';
+import type { Tokenizer } from '@seanhogg/ssmjs';
 
-const runtime = await SSMRuntime.create({
+const myTokenizer: Tokenizer = {
+  encode(text: string): number[]  { /* your encode implementation */ return []; },
+  decode(tokens: number[]): string { /* your decode implementation */ return ''; },
+  get vocabSize(): number          { return 32000; },
+};
+
+const runtime = await SSM.create({
   session: {
-    modelSize    : 'small',
-    mambaVersion : 'mamba2',
-    checkpointUrl: '/models/checkpoint.bin',
+    tokenizer: myTokenizer,   // replaces BPETokenizer entirely
+    modelSize: 'small',
   },
-  bridge          : new OpenAIBridge({ apiKey: 'sk-...' }),
-  routingStrategy : 'auto',         // 'auto' | 'ssm' | 'transformer'
+});
+```
+
+Use cases:
+- **HuggingFace Transformers.js** tokenizer — wrap its `encode`/`decode` in the interface
+- **Unit testing** — a stub tokenizer that maps words to sequential IDs, no network needed
+- **Domain-specific vocabularies** — medical, legal, multilingual tokenizers
+
+---
+
+## Memory System
+
+`MemoryStore` is a persistent, TTL-aware, tagged key-value fact store backed by IndexedDB.
+
+### Basic usage
+
+```ts
+import { MemoryStore } from '@seanhogg/ssmjs';
+
+const memory = new MemoryStore({
+  dbName      : 'my-app',
+  defaultTtlMs: 7 * 24 * 60 * 60 * 1000,  // 7-day default TTL
+  idbFactory,  // Node.js only
 });
 
-const response = await runtime.generate('Explain recursion');
-await runtime.save();    // persist weights to IndexedDB
-runtime.destroy();       // release GPU
+// Store facts
+await memory.remember('author', 'Sean Hogg');
+await memory.remember('stack', 'React + TypeScript', {
+  tags      : ['tech', 'project'],
+  importance: 0.8,
+  ttlMs     : 30 * 24 * 60 * 60 * 1000,  // 30 days
+});
+
+// Retrieve
+const entry = await memory.recall('author');
+
+// All non-expired facts, newest first
+const all = await memory.recallAll();
+
+// N most recent non-expired facts
+const recent = await memory.recallRecent(10);
+
+// Filter by tag
+const techFacts = await memory.recallByTag('tech');
+
+// Semantic similarity search (Jaccard word-overlap; SSM embeddings in future)
+const similar = await memory.recallSimilar('who built this?', 5, runtime);
+
+// Purge expired entries from storage
+const deletedCount = await memory.purgeExpired();
 ```
 
----
-
-### Transformer Bridges
-
-Plug in any LLM as a teacher or fallback.
+### Cross-session memory merge
 
 ```ts
-import { OpenAIBridge, AnthropicBridge, FetchBridge } from 'ssmjs';
+// Export all non-expired facts from sessionA
+const exported = await memoryA.exportAll();
 
-// OpenAI
-const gpt = new OpenAIBridge({ apiKey: 'sk-...', model: 'gpt-4o' });
+// Import into sessionB
+await memoryB.importAll(exported, 'merge');
+// 'merge'     — only overwrites if incoming entry is newer
+// 'overwrite' — writes all entries unconditionally
+```
 
-// Anthropic
-const claude = new AnthropicBridge({ apiKey: 'sk-ant-...' });
+### Weight persistence
 
-// Local / self-hosted (Ollama, LM Studio, vLLM)
-const local = new FetchBridge({ baseUrl: 'http://localhost:11434/v1', model: 'llama3' });
+```ts
+await memory.saveWeights(runtime);      // saves model weights to IndexedDB
+const loaded = await memory.loadWeights(runtime);  // false if no checkpoint found
+```
 
-// All bridges support streaming
-for await (const token of claude.stream('Write a poem')) {
-  output += token;
+### MemoryEntry schema
+
+```ts
+interface MemoryEntry {
+  key        : string;
+  content    : string;
+  timestamp  : number;
+  ttlMs?     : number;       // optional TTL; entry filtered after timestamp + ttlMs
+  type?      : FactType;     // 'text' | 'json' | 'number' | 'boolean'
+  tags?      : string[];     // for grouping/filtering
+  importance?: number;       // 0–1, default 0.5; higher facts appear first in prompts
 }
 ```
 
 ---
 
-### InferenceRouter
+## Inference Routing
 
-Automatically routes each request to the right model.
+`InferenceRouter` decides whether each request goes to the local SSM or the transformer bridge. It is built into `SSMRuntime` — you don't need to instantiate it directly.
+
+### Routing strategies
 
 ```ts
-import { SSMRuntime, InferenceRouter } from 'ssmjs';
-
-// Default auto-routing (built into SSMRuntime.create)
 const runtime = await SSM.create({
   session: { modelSize: 'nano' },
   bridge : claude,
-  routingStrategy   : 'auto',
-  longInputThreshold: 1200,     // chars before preferring transformer
-  perplexityThreshold: 80,      // SSM perplexity threshold for fallback
+  routingStrategy   : 'auto',   // 'auto' | 'ssm' | 'transformer'
+  longInputThreshold: 1200,     // chars before preferring transformer (default: 1200)
+  perplexityThreshold: 80,      // SSM perplexity cutoff (default: 80)
 });
 ```
 
 **Auto-routing heuristics (cheapest first):**
-1. **Complexity patterns** — detects "step by step", "analyze", "compare" → transformer
+1. **Complexity patterns** — "step by step", "analyze", "compare and contrast" → transformer
 2. **Input length** — over threshold → transformer
 3. **SSM perplexity** — async probe; high perplexity = novel topic → transformer
 
----
+### RoutingDecision type
 
-### DistillationEngine
-
-Teach the SSM using a transformer — runs entirely in the browser.
+`route()` now returns a structured `RoutingDecision` object:
 
 ```ts
-import { DistillationEngine } from 'ssmjs';
+interface RoutingDecision {
+  target    : 'ssm' | 'transformer';
+  reason    : 'strategy' | 'complexity' | 'length' | 'perplexity' | 'no_bridge';
+  confidence: number;    // 0–1
+  details?  : string;    // human-readable explanation
+}
+```
+
+### Routing audit log
+
+Every routing decision is appended to an in-memory audit log (last 500 entries):
+
+```ts
+const log = runtime.getRoutingAuditLog();
+// log: RoutingAuditEntry[]
+// { timestamp, inputLength, decision: RoutingDecision, durationMs }
+```
+
+---
+
+## Distillation
+
+Teach the local SSM using a transformer teacher — runs entirely in the browser or Node.js.
+
+```ts
+import { DistillationEngine } from '@seanhogg/ssmjs';
 
 const distiller = new DistillationEngine(runtime, claude);
 
 // Single pass: claude generates → SSM adapts on output
-const result = await distiller.distill('Explain WebGPU compute shaders');
-console.log('Teacher:', result.teacherOutput);
-console.log('Loss after:', result.adaptResult.losses.at(-1));
+const result = await distiller.distill('Explain WebGPU compute shaders', {
+  adapt      : { wsla: true, epochs: 3 },
+  qualityGate: {
+    minLength    : 50,    // skip if teacher output < 50 chars
+    maxPerplexity: 15,    // skip if SSM perplexity already < 15 (already learned)
+  },
+});
+
+console.log('skipped:', result.skipped, result.skipReason);
+console.log('loss:',    result.adaptResult.losses.at(-1));
 
 // Batch distillation
-const batchResult = await distiller.distillBatch([
+const batch = await distiller.distillBatch([
   'What is a Mamba block?',
   'Explain WSLA adaptation.',
-  'How does SSD differ from S6?',
 ], { adapt: { wsla: true, epochs: 5 } });
 
-console.log(`${batchResult.totalEpochs} epochs in ${batchResult.totalMs}ms`);
+console.log(`${batch.totalEpochs} epochs in ${batch.totalMs}ms`);
 ```
+
+### Quality gates
+
+| Gate option      | Description |
+|------------------|-------------|
+| `minLength`      | Skip if teacher output is shorter than N characters (low-quality response) |
+| `maxPerplexity`  | Skip if SSM perplexity on teacher output is already below threshold (already learned) |
+
+### Distillation log
+
+```ts
+const log = distiller.getLog();
+// log: DistillationLog[]
+// { timestamp, input, teacherOutputLength, skipped, skipReason?, finalLoss?, epochs }
+```
+
+The log is bounded to the last 200 entries.
 
 ---
 
-### MemoryStore
+## SSMAgent
 
-Persistent semantic key-value memory, separate from model weights.
-
-```ts
-import { MemoryStore } from 'ssmjs';
-
-// Browser
-const memory = new MemoryStore({ dbName: 'my-app' });
-
-// Node.js — inject fake-indexeddb
-import { IDBFactory } from 'fake-indexeddb';
-const memory = new MemoryStore({ dbName: 'my-app', idbFactory: new IDBFactory() });
-
-// Store facts
-await memory.remember('author', 'Sean Hogg');
-await memory.remember('project', 'MambaCode.js WebGPU SSM library');
-
-// Retrieve
-const entry = await memory.recall('project');
-console.log(entry?.content);  // 'MambaCode.js WebGPU SSM library'
-
-// List all
-const all = await memory.recallAll();
-
-// Persist and restore model weights
-await memory.saveWeights(runtime);       // saves to IndexedDB under 'ssmjs-weights'
-const loaded = await memory.loadWeights(runtime);   // returns false if none saved
-```
-
----
-
-### SSMAgent
-
-High-level orchestration: conversation history, routing, memory injection.
+High-level orchestration: conversation history, routing, memory injection, and lifecycle.
 
 ```ts
-import { SSMAgent, MemoryStore } from 'ssmjs';
+import { SSMAgent, MemoryStore } from '@seanhogg/ssmjs';
 
 const memory = new MemoryStore();
 const agent  = new SSMAgent({
-  runtime      : runtime,
+  runtime        : runtime,
   memory,
-  systemPrompt : 'You are a senior TypeScript engineer.',
+  systemPrompt   : 'You are a senior TypeScript engineer.',
   maxHistoryTurns: 20,
+  persistHistory : true,  // saves/loads history via memory on destroy/init
 });
+
+// Load persisted history from a prior session
+await agent.init();
 
 // Store project context
 await agent.remember('stack', 'React 18, TypeScript 5, Vite');
-await agent.remember('goal', 'Build a real-time collaborative editor');
 
-// Multi-turn conversation — facts matching input keys are auto-injected
+// Multi-turn conversation — facts with highest importance appear first in context
 const reply1 = await agent.think('What stack should I use?');
 const reply2 = await agent.think('How do I handle concurrent edits?');
 
 // Streaming
 for await (const token of agent.thinkStream('Show me a WebSocket hook')) {
-  output += token;
+  process.stdout.write(token);
 }
 
 // Teach the agent from content
 await agent.learn(myCodebase, { wsla: true, epochs: 3 });
 
 console.log(agent.turnCount);  // 2
-agent.clearHistory();
+
+// Persists history to memory, then destroys runtime
+await agent.destroy();
 ```
+
+### History persistence
+
+When `persistHistory: true` (default):
+- On `agent.init()`: loads `__history__` from the `MemoryStore` and restores conversation turns.
+- On `agent.destroy()`: serialises `_history` to JSON and writes it under `__history__`.
+
+This enables multi-session continuity without external state management.
+
+### Fact injection order
+
+Facts retrieved from `MemoryStore` are sorted by `importance` descending before being injected into the prompt. Higher-importance facts appear first, giving the model the most relevant context regardless of insertion order.
 
 ---
 
-## Full Example
+## Migration from MambaKit
+
+`@seanhogg/mambakit` has been consolidated into this package. `MambaSession` and all related types are now exported directly from `@seanhogg/ssmjs`.
+
+**Before:**
+
+```bash
+npm install @seanhogg/mambakit @seanhogg/ssmjs
+```
 
 ```ts
-import {
-  SSM,
-  AnthropicBridge,
-  DistillationEngine,
-  MemoryStore,
-  SSMAgent,
-} from 'ssmjs';
-
-// 1. Create runtime with hybrid routing
-const runtime = await SSM.create({
-  session: { modelSize: 'small', mambaVersion: 'mamba3' },
-  bridge : new AnthropicBridge({ apiKey: process.env.ANTHROPIC_KEY! }),
-  routingStrategy: 'auto',
-});
-
-// 2. Distill knowledge from the transformer into the SSM
-const distiller = new DistillationEngine(runtime, runtime.bridge!);
-await distiller.distillBatch([
-  'What are the key differences between Mamba-1 and Mamba-2?',
-  'How does WSLA fast-adaptation work?',
-  'Explain the ET discretisation in Mamba-3.',
-]);
-
-// 3. Set up persistent memory
-const memory = new MemoryStore();
-await memory.saveWeights(runtime);  // save distilled weights
-
-// 4. Build an agent
-const agent = new SSMAgent({
-  runtime,
-  memory,
-  systemPrompt: 'You are an expert on the Mamba SSM family.',
-});
-
-// 5. Interact
-const answer = await agent.think('Compare Mamba-2 SSD and Mamba-3 ET');
-console.log(answer);
+import { MambaSession, MambaKitError } from '@seanhogg/mambakit';
+import type { MambaSessionOptions, Tokenizer } from '@seanhogg/mambakit';
 ```
+
+**After:**
+
+```bash
+npm install @seanhogg/ssmjs
+```
+
+```ts
+import { MambaSession, MambaKitError } from '@seanhogg/ssmjs';
+import type { MambaSessionOptions, Tokenizer } from '@seanhogg/ssmjs';
+```
+
+All types are re-exported unchanged — `MambaSessionOptions`, `CompleteOptions`, `AdaptOptions`,
+`AdaptResult`, `SaveOptions`, `LoadOptions`, `StorageTarget`, `CreateCallbacks`,
+`LayerSchedulePreset`, `MODEL_PRESETS`, `GpuMode`, and `Tokenizer`.
+No logic changes are required, only the import path.
+
+---
+
+## CoderClaw Integration
+
+SSM.js serves as the **hippocampus** layer of [CoderClaw](https://coderclaw.ai)'s gateway — a persistent semantic memory and local inference engine running alongside the frontier LLM (Claude/GPT) cortex.
+
+The `SsmMemoryService` class in CoderClaw's `src/infra/ssm-memory-service.ts` wraps an `SSMRuntime` + `SSMAgent` + `MemoryStore` triplet:
+
+```
+CoderClaw gateway
+├── server-startup.ts       ← initSsmMemoryService() on boot
+├── infra/knowledge-loop.ts ← remember() + learn() on every agent run
+├── infra/ssm-memory-service.ts  ← SsmMemoryService wrapper
+└── coderclaw/orchestrator.ts    ← recallSimilar() injected into task prompts
+```
+
+**Data flow:**
+1. Agent run completes → `KnowledgeLoopService` derives activity summary
+2. Summary is stored in `.coderClaw/memory/YYYY-MM-DD.md` (markdown log)
+3. Summary is also passed to `ssmSvc.remember()` (tagged + importance-weighted)
+4. Summary is passed to `ssmSvc.learn()` → WSLA fine-tuning adapts the SSM
+5. On next workflow task, `recallSimilar(taskDescription, 5)` injects relevant memories into the prompt as a `[Memory Context]` block
+
+GPU init is optional: if `@webgpu/node` is unavailable, the service starts in memory-only mode (`gpuAvailable: false`) and SSM inference is skipped. The gateway never crashes due to a missing GPU.
+
+---
+
+## Phase Roadmap
+
+### Phase 1 — Foundations
+- MambaKit: `Tokenizer` interface + pluggable injection via `MambaSessionOptions.tokenizer`
+- `MemoryStore`: TTL (`ttlMs`), `defaultTtlMs`, `purgeExpired()`, `recallRecent(n)`
+- `MemoryStore`: `FactType`, `tags`, `importance` fields on `MemoryEntry`
+- `MemoryStore`: updated `remember()` accepting `RememberOptions`
+- `InferenceRouter`: `route()` now returns `RoutingDecision` object with `target`, `reason`, `confidence`, `details`
+- `SSMAgent`: `persistHistory` option; `init()` loads `__history__`; `destroy()` saves it
+- `SSMAgent`: fact injection sorted by `importance` descending
+
+### Phase 2 — Semantic Memory
+- `MemoryStore.recallSimilar(query, topK, runtime)` — Jaccard similarity; SSM embedding-based search in future
+- `MemoryStore.recallByTag(tag)` — tag-based filtering
+- `MemoryStore.exportAll()` / `importAll(entries, strategy)` — cross-session merge
+
+### Phase 3 — CoderClaw Integration
+- `SsmMemoryService` in `src/infra/ssm-memory-service.ts` — singleton gateway service
+- `server-startup.ts`: `initSsmMemoryService()` on boot; non-fatal GPU fallback
+- `KnowledgeLoopService`: `remember()` + `learn()` on every agent run completion
+- `AgentOrchestrator`: `recallSimilar()` injected as `[Memory Context]` before task dispatch
+
+### Phase 4 — Feedback Loop
+- `DistillationEngine`: `qualityGate` option (`minLength`, `maxPerplexity`)
+- `DistillResult`: `skipped` + `skipReason` fields
+- `DistillationEngine.getLog()` — bounded in-memory `DistillationLog[]`
+- `InferenceRouter`: `RoutingAuditEntry` + `getAuditLog()` — bounded in-memory log
+- `SSMRuntime.getRoutingAuditLog()` — delegates to router
+- `SSMRuntime.getDistillationLog()` — stub; returns empty array (inline engine future work)
 
 ---
 
@@ -340,7 +479,7 @@ console.log(answer);
 | `callbacks` | `CreateCallbacks` | — | Progress callbacks |
 
 ### `runtime.generate(input, opts?)`
-Generates a full response. Routes to SSM or transformer per strategy.
+Generates a full response. Routes to SSM or transformer per strategy. Returns `Promise<string>`.
 
 ### `runtime.stream(input, opts?)`
 `AsyncIterable<string>` — always uses SSM path for consistent latency.
@@ -354,6 +493,12 @@ Pass-through to `session.adapt()`. Returns `AdaptResult`.
 ### `runtime.evaluate(text)`
 Returns SSM perplexity. Used internally by auto-routing.
 
+### `runtime.getRoutingAuditLog()`
+Returns `RoutingAuditEntry[]` — last 500 routing decisions with timing.
+
+### `runtime.getDistillationLog()`
+Returns `DistillationLog[]` — last 200 distillation runs (stub; use `distiller.getLog()` directly).
+
 ### `runtime.save(opts?)` / `runtime.load(opts?)`
 Weight persistence pass-throughs to `MambaSession`.
 
@@ -365,8 +510,7 @@ Releases GPU device and all buffers.
 ## Error Handling
 
 ```ts
-import { SSMError, SSMErrorCode } from 'ssmjs';
-import { MambaKitError }          from 'mambakit';
+import { SSMError, MambaKitError } from '@seanhogg/ssmjs';
 
 try {
   const runtime = await SSM.create({ session: { modelSize: 'nano' } });
@@ -390,6 +534,14 @@ try {
 ```
 src/
 ├── index.ts                          ← package entry + SSM namespace
+├── session/                          ← session layer (absorbed from @seanhogg/mambakit)
+│   ├── session.ts                    ← MambaSession.create() — GPU, tokenizer, model, persistence
+│   ├── tokenizer.ts                  ← Tokenizer interface (pluggable)
+│   ├── presets.ts                    ← MODEL_PRESETS + layer schedule resolution
+│   ├── persistence.ts                ← IndexedDB / download / File System API helpers
+│   ├── streaming.ts                  ← AsyncIterable token streaming
+│   ├── errors.ts                     ← MambaKitError typed error class
+│   └── index.ts                      ← barrel export
 ├── runtime/
 │   └── SSMRuntime.ts                 ← core runtime, owns MambaSession
 ├── bridges/
@@ -398,13 +550,13 @@ src/
 │   ├── AnthropicBridge.ts            ← Anthropic Messages API
 │   └── FetchBridge.ts                ← generic OpenAI-compatible endpoint
 ├── router/
-│   └── InferenceRouter.ts            ← SSM ↔ transformer routing
+│   └── InferenceRouter.ts            ← SSM ↔ transformer routing + audit log
 ├── memory/
-│   └── MemoryStore.ts                ← IndexedDB fact store + weight helpers
+│   └── MemoryStore.ts                ← IndexedDB fact store: TTL, tags, importance, export/import
 ├── distillation/
-│   └── DistillationEngine.ts         ← online teacher→student distillation
+│   └── DistillationEngine.ts         ← online teacher→student distillation + quality gates
 ├── agent/
-│   └── SSMAgent.ts                   ← orchestration: history + routing + memory
+│   └── SSMAgent.ts                   ← orchestration: history persistence + fact injection
 └── errors/
     └── SSMError.ts                   ← typed error class
 ```
@@ -415,8 +567,6 @@ src/
 
 **SSM.js patterns are the architectural foundation of [Builderforce.ai](https://builderforce.ai)'s Agent Runtime.**
 
-Builderforce.ai implements the SSM.js runtime model natively in the browser — the same `step()` → inference → confidence scoring → cloud escalation pipeline runs inside the IDE's `agent-runtime.ts`:
-
 | SSM.js concept | Builderforce.ai equivalent |
 |---|---|
 | `SSMRuntime` | `AgentRuntime` (browser-native, ties to IDE project) |
@@ -424,16 +574,6 @@ Builderforce.ai implements the SSM.js runtime model natively in the browser — 
 | `MemoryStore` | IndexedDB `MambaAgentState` + `AgentPackage` embedding |
 | `SSMAgent` | Published workforce agent (Workforce Registry) |
 | `TransformerBridge` | Cloudflare Workers AI / OpenRouter fallback |
-| Confidence threshold → escalation | Auto-escalation to Workers AI when local score < threshold |
-
-**What Builderforce.ai adds on top:**
-
-- **Visual training panel** — configure LoRA rank, epochs, batch size, learning rate with a loss curve and live log console; no code required
-- **Team collaboration** — real-time Yjs + Durable Objects CRDT editing; multiple users on the same project
-- **Workforce Registry** — publish `SSMAgent`-equivalent specialists; discoverable by skills; hirable by the community
-- **CoderClaw mesh** — agents deploy as self-hosted coding agents via [CoderClaw](https://coderclaw.ai) and receive task assignments from Builderforce
-
-Use SSM.js to build custom agent runtimes in your own applications. Use Builderforce.ai for the full managed experience — IDE, training infrastructure, agent publishing, and enterprise orchestration.
 
 ---
 

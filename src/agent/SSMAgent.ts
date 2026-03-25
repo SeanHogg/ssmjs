@@ -8,7 +8,7 @@
  * token patterns it was trained on:
  *
  *   System: <systemPrompt>
- *   [Fact (<key>): <content>  ← only facts whose keys appear in the input]
+ *   [Fact (<key>): <content>  ← injected by importance desc, filtered by tag/key]
  *   User: <message>
  *   Assistant: <message>
  *   ...
@@ -16,7 +16,7 @@
  *   Assistant:
  */
 
-import type { AdaptOptions, AdaptResult } from '@seanhogg/mambakit';
+import type { AdaptOptions, AdaptResult } from '../session/index.js';
 import type { SSMRuntime, GenerateOptions } from '../runtime/SSMRuntime.js';
 import type { MemoryStore } from '../memory/MemoryStore.js';
 import { SSMError } from '../errors/SSMError.js';
@@ -43,6 +43,13 @@ export interface SSMAgentOptions {
      * Default: 20
      */
     maxHistoryTurns? : number;
+    /**
+     * When true, the agent serialises its conversation history to memory
+     * under the `__history__` key on `destroy()`, and loads it back on
+     * construction if the key is present.
+     * Default: true
+     */
+    persistHistory?  : boolean;
 }
 
 export interface ThinkOptions extends GenerateOptions {
@@ -55,13 +62,17 @@ export interface ThinkOptions extends GenerateOptions {
     injectAllFacts?: boolean;
 }
 
+/** Key used to persist conversation history in the MemoryStore. */
+const HISTORY_KEY = '__history__';
+
 // ── SSMAgent ──────────────────────────────────────────────────────────────────
 
 export class SSMAgent {
-    private readonly _runtime        : SSMRuntime;
-    private readonly _memory         : MemoryStore | undefined;
-    private readonly _systemPrompt   : string;
-    private readonly _maxHistoryTurns: number;
+    private readonly _runtime         : SSMRuntime;
+    private readonly _memory          : MemoryStore | undefined;
+    private readonly _systemPrompt    : string;
+    private readonly _maxHistoryTurns : number;
+    private readonly _persistHistory  : boolean;
     private _history: AgentMessage[] = [];
 
     constructor(opts: SSMAgentOptions) {
@@ -69,6 +80,29 @@ export class SSMAgent {
         this._memory          = opts.memory;
         this._systemPrompt    = opts.systemPrompt    ?? 'You are a helpful assistant.';
         this._maxHistoryTurns = opts.maxHistoryTurns ?? 20;
+        this._persistHistory  = opts.persistHistory  ?? true;
+    }
+
+    /**
+     * Initialises the agent, loading persisted history from memory if available.
+     * Call this after construction when `persistHistory` is enabled and a memory
+     * store is present.
+     */
+    async init(): Promise<void> {
+        if (this._persistHistory && this._memory) {
+            try {
+                const entry = await this._memory.recall(HISTORY_KEY);
+                if (entry) {
+                    const parsed = JSON.parse(entry.content) as AgentMessage[];
+                    if (Array.isArray(parsed)) {
+                        this._history = parsed;
+                    }
+                }
+            } catch {
+                // Corrupted or missing history — start fresh
+                this._history = [];
+            }
+        }
     }
 
     // ── Inference ─────────────────────────────────────────────────────────────
@@ -175,24 +209,46 @@ export class SSMAgent {
         return this._history;
     }
 
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    /**
+     * Persists conversation history to memory (if `persistHistory` is true and
+     * a MemoryStore is available) and destroys the underlying runtime.
+     */
+    async destroy(): Promise<void> {
+        if (this._persistHistory && this._memory && this._history.length > 0) {
+            try {
+                await this._memory.remember(HISTORY_KEY, JSON.stringify(this._history));
+            } catch {
+                // Persistence failure is non-fatal
+            }
+        }
+        this._runtime.destroy();
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     private async _buildPrompt(
-        input          : string,
-        systemPromptOverride? : string,
-        injectAllFacts?: boolean,
+        input                : string,
+        systemPromptOverride?: string,
+        injectAllFacts?      : boolean,
     ): Promise<string> {
         const sys   = systemPromptOverride ?? this._systemPrompt;
         const lines : string[] = [`System: ${sys}`];
 
-        // Inject relevant facts from MemoryStore
+        // Inject relevant facts from MemoryStore, sorted by importance descending
         if (this._memory) {
             const facts = await this._memory.recallAll();
             const relevant = injectAllFacts
                 ? facts
                 : facts.filter(f => input.includes(f.key));
 
-            for (const fact of relevant) {
+            // Sort by importance descending (missing importance defaults to 0.5)
+            const sorted = relevant.slice().sort(
+                (a, b) => (b.importance ?? 0.5) - (a.importance ?? 0.5),
+            );
+
+            for (const fact of sorted) {
                 lines.push(`Fact (${fact.key}): ${fact.content}`);
             }
         }

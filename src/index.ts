@@ -2,9 +2,8 @@
  * SSM.js – JavaScript-native AI runtime.
  *
  * Layer stack:
- *   MambaCode.js  →  Math + WGSL kernels
- *   MambaKit      →  Model / session abstraction
- *   SSM.js        →  Runtime orchestration (this package)
+ *   MambaCode.js  →  WebGPU kernels (WGSL, Mamba-1/2/3 SSM math)
+ *   SSM.js        →  Session layer + Runtime orchestration (this package)
  *
  * Quick start:
  *   import { SSM, AnthropicBridge } from 'ssmjs';
@@ -17,6 +16,29 @@
  *   await ai.adapt(myDocs);
  *   const answer = await ai.generate('How does MambaKit work?');
  */
+
+// ── Session layer (absorbed from @seanhogg/mambakit) ─────────────────────────
+export { MambaSession }              from './session/index.js';
+export { MambaKitError }             from './session/index.js';
+export { MODEL_PRESETS, resolveLayerSchedule, resolveModelConfig } from './session/index.js';
+
+export type { MambaKitErrorCode }    from './session/index.js';
+export type { LayerSchedulePreset }  from './session/index.js';
+export type {
+    MambaSessionOptions,
+    CompleteOptions,
+    AdaptOptions,
+    AdaptResult,
+    SaveOptions,
+    LoadOptions,
+    StorageTarget,
+    CreateProgressEvent,
+    CreateStage,
+    CreateCallbacks,
+    SessionInternals,
+    GpuMode,
+    Tokenizer,
+} from './session/index.js';
 
 // ── Runtime ───────────────────────────────────────────────────────────────────
 export { SSMRuntime }    from './runtime/SSMRuntime.js';
@@ -33,15 +55,32 @@ export type { FetchBridgeOptions }     from './bridges/FetchBridge.js';
 
 // ── Router ────────────────────────────────────────────────────────────────────
 export { InferenceRouter } from './router/InferenceRouter.js';
-export type { RoutingStrategy, RoutingDecision, RouterContext, InferenceRouterOptions } from './router/InferenceRouter.js';
+export type {
+    RoutingStrategy,
+    RoutingDecision,
+    RouterContext,
+    InferenceRouterOptions,
+    RoutingAuditEntry,
+} from './router/InferenceRouter.js';
 
 // ── Memory ────────────────────────────────────────────────────────────────────
 export { MemoryStore }  from './memory/MemoryStore.js';
-export type { MemoryEntry, MemoryStoreOptions } from './memory/MemoryStore.js';
+export type {
+    MemoryEntry,
+    MemoryStoreOptions,
+    RememberOptions,
+    FactType,
+} from './memory/MemoryStore.js';
 
 // ── Distillation ──────────────────────────────────────────────────────────────
 export { DistillationEngine } from './distillation/DistillationEngine.js';
-export type { DistillOptions, DistillResult, DistillBatchResult } from './distillation/DistillationEngine.js';
+export type {
+    DistillOptions,
+    DistillResult,
+    DistillBatchResult,
+    DistillationLog,
+    QualityGate,
+} from './distillation/DistillationEngine.js';
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
 export { SSMAgent }  from './agent/SSMAgent.js';
