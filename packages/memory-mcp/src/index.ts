@@ -32,7 +32,7 @@ export type { HttpHandlerOptions } from "./transports/http.js";
 export { hashToken, timingSafeEqualStr, buildTenantIndex, bearerToken, RateLimiter } from "./transports/auth.js";
 
 // ── Multi-host installer (wire the stdio server into any MCP-capable agent) ───
-export { buildServerSpec, MCP_PACKAGE, MCP_BIN, RUNTIME_PEERS } from "./install/server-spec.js";
+export { buildServerSpec, defaultMemoryFile, resolveMemoryFile, MCP_PACKAGE, MCP_BIN, MEMORY_FILE_ENV, RUNTIME_PEERS } from "./install/server-spec.js";
 export type { StdioServerSpec, ServerSpecOptions } from "./install/server-spec.js";
 export { installMemoryServer } from "./install/install.js";
 export type { InstallOptions, InstallResult, InstallStatus, HostSelector, FsLike } from "./install/install.js";
@@ -40,5 +40,5 @@ export { HOSTS, SERVER_KEY, findHost } from "./install/hosts.js";
 export type { HostAdapter, HostEnv, ConfigFormat } from "./install/hosts.js";
 // Claude Code "memory combo" — hooks (SessionStart/PreCompact/UserPromptSubmit/Stop)
 // + companion skill that make memory self-driving (contextual recall + autonomous capture).
-export { installClaudeCombo, bfmemHookSource, companionSkillMd, claudeComboPaths } from "./install/claude-hooks.js";
-export type { ClaudeComboPaths } from "./install/claude-hooks.js";
+export { installClaudeCombo, bfmemHookSource, companionSkillMd, claudeComboPaths, pluginHooksConfig, HOOK_EVENTS } from "./install/claude-hooks.js";
+export type { ClaudeComboPaths, HookConfig } from "./install/claude-hooks.js";

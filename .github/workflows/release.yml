@@ -33,9 +33,29 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # Generated distribution artifacts (Claude Code plugin, MCP Registry
+      # manifest) must match their sources before anything ships.
+      - name: Distribution artifacts are in sync
+        run: pnpm plugin:check && pnpm registry:check
+
       # Publishes @seanhogg/builderforce-memory-engine, @seanhogg/builderforce-memory, and @seanhogg/builderforce-memory-mcp.
       # pnpm resolves `workspace:^` peer/dep specifiers to real version ranges at pack time.
       - name: Publish
         run: pnpm -r publish --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # ── MCP Registry (registry.modelcontextprotocol.io) ──────────────────
+      # The registry hosts metadata only and validates that the npm package is
+      # already live, so this runs AFTER the npm publish above. OIDC auth means
+      # no long-lived token: the `io.github.SeanHogg/*` namespace is proven by
+      # this repository's own identity.
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Publish to the MCP Registry
+        working-directory: packages/memory-mcp
+        run: |
+          ../../mcp-publisher login github-oidc
+          ../../mcp-publisher publish

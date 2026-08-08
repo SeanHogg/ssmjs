@@ -22,6 +22,7 @@ import nodeFs from "node:fs";
 import { HOSTS } from "../install/hosts.js";
 import { installMemoryServer, type HostSelector } from "../install/install.js";
 import { installClaudeCombo } from "../install/claude-hooks.js";
+import { defaultMemoryFile } from "../install/server-spec.js";
 
 function argValue(name: string): string | undefined {
     const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -54,7 +55,7 @@ const hosts: HostSelector =
           ? "all"
           : hostArg.split(",").map((s) => s.trim()).filter(Boolean);
 
-const memoryFile = argValue("memory-file") ?? path.join(os.homedir(), ".builderforce-memory", "memory.json");
+const memoryFile = argValue("memory-file") ?? defaultMemoryFile();
 
 let results;
 try {

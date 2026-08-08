@@ -2,7 +2,10 @@
 // HostEnv so nothing touches a real machine. Run with `node --test` against dist.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { installMemoryServer, HOSTS, installClaudeCombo, bfmemHookSource } from "../dist/index.js";
+import {
+    installMemoryServer, HOSTS, installClaudeCombo, bfmemHookSource,
+    pluginHooksConfig, HOOK_EVENTS, defaultMemoryFile, resolveMemoryFile, MEMORY_FILE_ENV,
+} from "../dist/index.js";
 
 /**
  * Minimal in-memory filesystem implementing the installer's FsLike seam.
@@ -168,6 +171,33 @@ test("claude combo: preserves pre-existing unrelated hooks", () => {
 
 test("bfmemHookSource bakes the memory file path in", () => {
     assert.ok(bfmemHookSource("/x/mem.json").includes('"/x/mem.json"'));
+});
+
+test("bfmemHookSource(null) resolves the snapshot at run time, matching defaultMemoryFile", () => {
+    const src = bfmemHookSource(null);
+    // A plugin ships one file to every machine, so no path may be baked in.
+    assert.ok(!src.includes("/x/mem.json"));
+    assert.ok(src.includes(`process.env["${MEMORY_FILE_ENV}"]`), "must honour the env override");
+    // The inlined fallback and the shared helper must name the SAME file — a
+    // reader and a writer that disagree is memory that silently disappears.
+    const tail = defaultMemoryFile("/home/u").replace(/\\/g, "/").split("/home/u/")[1];
+    assert.ok(src.includes(`path.join(os.homedir(), ${tail.split("/").map((s) => JSON.stringify(s)).join(", ")})`),
+        "hook fallback drifted from defaultMemoryFile()");
+});
+
+test("resolveMemoryFile prefers the env override and otherwise persists by default", () => {
+    assert.equal(resolveMemoryFile({ [MEMORY_FILE_ENV]: "/explicit.json" }), "/explicit.json");
+    assert.equal(resolveMemoryFile({}, "/home/u"), defaultMemoryFile("/home/u"));
+});
+
+test("pluginHooksConfig covers every combo event and points at the plugin root", () => {
+    const config = pluginHooksConfig();
+    assert.deepEqual(Object.keys(config).sort(), HOOK_EVENTS.map((h) => h.event).sort());
+    for (const { event, mode } of HOOK_EVENTS) {
+        const command = config[event][0].hooks[0].command;
+        assert.ok(command.includes("${CLAUDE_PLUGIN_ROOT}"), `${event} must resolve via the plugin root`);
+        assert.ok(command.endsWith(mode), `${event} must run ${mode}`);
+    }
 });
 
 test("windows wraps npx through cmd", () => {

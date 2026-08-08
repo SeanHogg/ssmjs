@@ -34,3 +34,14 @@ jobs:
       # packages/memory/package.json#jest.coverageThreshold and only goes up.
       - name: Coverage
         run: pnpm test:coverage
+
+      # The Claude Code plugin under plugins/ is GENERATED from the same source
+      # as the installer. Fail if the committed copy is stale, so an edit to the
+      # hook script or a version bump can't ship a plugin that disagrees with it.
+      - name: Claude Code plugin is in sync
+        run: pnpm plugin:check
+
+      # The MCP Registry rejects a manifest whose package version isn't on npm,
+      # so server.json must move with package.json.
+      - name: MCP Registry manifest is in sync
+        run: pnpm registry:check

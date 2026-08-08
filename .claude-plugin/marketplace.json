@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "builderforce",
+  "description": "Builderforce plugins for Claude Code — persistent, token-saving memory.",
+  "owner": {
+    "name": "Sean Hogg",
+    "email": "seanhogg@gmail.com",
+    "url": "https://builderforce.ai"
+  },
+  "plugins": [
+    {
+      "name": "builderforce-memory",
+      "displayName": "Builderforce Memory",
+      "source": "./plugins/builderforce-memory",
+      "description": "Token-saving persistent memory for Claude Code. Recall durable facts instead of re-reading files or history, with a session digest, contextual per-prompt recall, and autonomous capture of corrections you would otherwise repeat.",
+      "category": "productivity",
+      "tags": ["memory", "context", "token-savings", "mcp", "recall"],
+      "homepage": "https://github.com/SeanHogg/builderforce-memory/tree/main/plugins/builderforce-memory#readme",
+      "repository": "https://github.com/SeanHogg/builderforce-memory",
+      "license": "MIT",
+      "author": {
+        "name": "Sean Hogg",
+        "email": "seanhogg@gmail.com",
+        "url": "https://builderforce.ai"
+      }
+    }
+  ]
+}

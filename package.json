@@ -2,7 +2,7 @@
   "name": "builderforce-memory",
   "version": "2026.7.13",
   "private": true,
-  "description": "BuilderForce Agent Memory — the memory subsystem of BuilderForce.ai. Engine (@seanhogg/builderforce-memory-engine) + runtime (@seanhogg/builderforce-memory) in one workspace.",
+  "description": "BuilderForce Agent Memory \u2014 the memory subsystem of BuilderForce.ai. Engine (@seanhogg/builderforce-memory-engine) + runtime (@seanhogg/builderforce-memory) in one workspace.",
   "type": "module",
   "author": {
     "name": "Sean Hogg",
@@ -27,7 +27,11 @@
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
     "clean": "pnpm -r exec rimraf dist",
-    "release:check": "pnpm build && pnpm test",
+    "plugin:build": "node scripts/build-claude-plugin.mjs",
+    "plugin:check": "node scripts/build-claude-plugin.mjs --check",
+    "registry:sync": "node scripts/sync-mcp-registry.mjs",
+    "registry:check": "node scripts/sync-mcp-registry.mjs --check",
+    "release:check": "pnpm build && pnpm test && pnpm plugin:check && pnpm registry:check",
     "typecheck:native": "tsgo --noEmit",
     "test:coverage": "pnpm -r test:coverage"
   },

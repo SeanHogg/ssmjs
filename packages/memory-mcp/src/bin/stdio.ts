@@ -5,10 +5,11 @@
  * Env:
  *   BUILDERFORCE_MEMORY_DB        IndexedDB database name (default: MemoryStore default).
  *   BUILDERFORCE_MEMORY_READONLY  '1' to disable remember/forget tools.
- *   BUILDERFORCE_MEMORY_FILE      Absolute path to a JSON snapshot. When set, memory
- *                                 persists across process restarts — REQUIRED for an
- *                                 MCP client that respawns this server each session
- *                                 (otherwise fake-indexeddb loses everything on exit).
+ *   BUILDERFORCE_MEMORY_FILE      Absolute path to a JSON snapshot. Defaults to the
+ *                                 shared per-machine store (~/.builderforce-memory/
+ *                                 memory.json) so memory survives the respawn every
+ *                                 MCP client does between sessions — without a
+ *                                 snapshot fake-indexeddb loses everything on exit.
  *   BUILDERFORCE_GATEWAY_URL      Gateway base URL (default https://api.builderforce.ai).
  *   BUILDERFORCE_API_KEY          `bfk_*` tenant key. When set, exposes the cost tools
  *                                 (token_usage, model_efficiency).
@@ -19,11 +20,12 @@
  */
 
 import { createLocalMemoryStoreBackend } from "../backends/memory-store.js";
+import { resolveMemoryFile } from "../install/server-spec.js";
 import { runStdio } from "../transports/stdio.js";
 
 const backend = await createLocalMemoryStoreBackend({
     dbName: process.env["BUILDERFORCE_MEMORY_DB"],
-    persistFile: process.env["BUILDERFORCE_MEMORY_FILE"],
+    persistFile: resolveMemoryFile(),
 });
 
 await runStdio(backend, {

@@ -7,10 +7,35 @@
  * server is launched, so the per-host adapters never re-derive the command.
  */
 
+import nodeOs from "node:os";
+import nodePath from "node:path";
+
 export interface StdioServerSpec {
     command: string;
     args: string[];
     env?: Record<string, string>;
+}
+
+/**
+ * The default JSON snapshot path: ONE store per machine, so every MCP host
+ * (Claude Code, Cursor, Claude Desktop, …) shares the same memory.
+ *
+ * Single source of truth for the installer, the stdio bin's fallback, and the
+ * Claude Code plugin's hook script — a memory file the writer and the reader
+ * disagree about is memory that silently disappears.
+ */
+export const MEMORY_FILE_ENV = "BUILDERFORCE_MEMORY_FILE";
+
+export function defaultMemoryFile(homedir: string = nodeOs.homedir()): string {
+    return nodePath.join(homedir, ".builderforce-memory", "memory.json");
+}
+
+/** The snapshot path in effect: explicit env wins, else the shared default. */
+export function resolveMemoryFile(
+    env: Record<string, string | undefined> = process.env,
+    homedir?: string,
+): string {
+    return env[MEMORY_FILE_ENV] || defaultMemoryFile(homedir);
 }
 
 export interface ServerSpecOptions {

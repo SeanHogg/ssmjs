@@ -1,0 +1,47 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.SeanHogg/builderforce-memory",
+  "title": "Builderforce Memory",
+  "description": "Token-saving persistent memory for AI agents. Recall durable facts — decisions, fixes, project context, user preferences — instead of re-reading files or chat history, and remember new ones as you learn them.",
+  "repository": {
+    "url": "https://github.com/SeanHogg/builderforce-memory",
+    "source": "github",
+    "subfolder": "packages/memory-mcp"
+  },
+  "version": "2026.7.14",
+  "websiteUrl": "https://builderforce.ai",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@seanhogg/builderforce-memory-mcp",
+      "version": "2026.7.14",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "BUILDERFORCE_MEMORY_FILE",
+          "description": "Absolute path to the JSON snapshot that makes memory survive restarts. Defaults to ~/.builderforce-memory/memory.json, which every MCP host on the machine shares.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "filepath"
+        },
+        {
+          "name": "BUILDERFORCE_MEMORY_READONLY",
+          "description": "Set to 1 to expose recall only (disables memory_remember and memory_forget).",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "BUILDERFORCE_API_KEY",
+          "description": "Builderforce tenant API key (bfk_*). When set, additionally exposes the token_usage and model_efficiency cost tools.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
