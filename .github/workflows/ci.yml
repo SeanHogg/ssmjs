@@ -13,12 +13,12 @@ jobs:
       - uses: actions/checkout@v7
 
       # Version is read from the `packageManager` field in package.json.
-      # Do not also set `version:` here — action-setup@v4 errors if both exist.
+      # Do not also set `version:` here — action-setup errors if both exist.
       - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 'lts/*'
+          node-version: '24'
           cache: pnpm
 
       - name: Install
