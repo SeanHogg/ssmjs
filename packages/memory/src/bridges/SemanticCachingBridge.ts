@@ -12,7 +12,7 @@
  * Streaming is delegated straight through and never cached.
  */
 
-import type { TransformerBridge, BridgeGenerateOptions } from './TransformerBridge.js';
+import type { TransformerBridge, BridgeGenerateOptions, BridgeCallInfo } from './TransformerBridge.js';
 import { SemanticCache, type SemanticCacheOptions } from '../cache/SemanticCache.js';
 
 export interface SemanticCachingBridgeOptions extends Omit<SemanticCacheOptions, never> {
@@ -23,6 +23,8 @@ export interface SemanticCachingBridgeOptions extends Omit<SemanticCacheOptions,
 export class SemanticCachingBridge implements TransformerBridge {
     private readonly _inner : TransformerBridge;
     private readonly _cache : SemanticCache;
+
+    private _lastCall: BridgeCallInfo | undefined;
 
     constructor(inner: TransformerBridge, opts: SemanticCachingBridgeOptions) {
         this._inner = inner;
@@ -38,15 +40,40 @@ export class SemanticCachingBridge implements TransformerBridge {
         return this._cache;
     }
 
+    /**
+     * Reports which tier answered (`l1` local vector scan, `l2` shared backend, or
+     * a miss), so the saving from paraphrase reuse is attributable per tier rather
+     * than lumped into one "cache" number.
+     */
+    get lastCall(): BridgeCallInfo | undefined {
+        return this._lastCall;
+    }
+
     async generate(prompt: string, opts: BridgeGenerateOptions = {}): Promise<string> {
         // Match on system + prompt meaning so different system contexts don't
         // cross-hit; partition further by model via the stored meta.
         const queryText = opts.systemPrompt ? `${opts.systemPrompt}\n${prompt}` : prompt;
-        const { response } = await this._cache.getOrGenerate(
+        const { response, cached, tier } = await this._cache.getOrGenerate(
             queryText,
             () => this._inner.generate(prompt, opts),
             opts.model ? { model: opts.model } : undefined,
         );
+
+        if (cached) {
+            this._lastCall = {
+                cacheHit : true,
+                ...(tier ? { cacheTier: tier } : {}),
+                usage    : {
+                    model        : opts.model ?? 'unknown',
+                    inputTokens  : 0,
+                    outputTokens : 0,
+                    localCacheHit: true,
+                },
+            };
+        } else {
+            const inner = this._inner.lastCall;
+            this._lastCall = { cacheHit: false, ...(inner?.usage ? { usage: inner.usage } : {}) };
+        }
         return response;
     }
 

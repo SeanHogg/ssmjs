@@ -16,7 +16,7 @@
  * consumed once and caching it would defeat its purpose.
  */
 
-import type { TransformerBridge, BridgeGenerateOptions } from './TransformerBridge.js';
+import type { TransformerBridge, BridgeGenerateOptions, BridgeCallInfo } from './TransformerBridge.js';
 import { ResponseCache, buildCacheKey, type ResponseCacheOptions } from './ResponseCache.js';
 
 export interface CachingBridgeOptions extends ResponseCacheOptions {
@@ -31,6 +31,8 @@ export interface CachingBridgeOptions extends ResponseCacheOptions {
 export class CachingBridge implements TransformerBridge {
     private readonly _inner : TransformerBridge;
     private readonly _cache : ResponseCache;
+
+    private _lastCall: BridgeCallInfo | undefined;
 
     constructor(inner: TransformerBridge, opts: CachingBridgeOptions = {}) {
         this._inner = inner;
@@ -47,6 +49,16 @@ export class CachingBridge implements TransformerBridge {
         return this._cache;
     }
 
+    /**
+     * A hit is declared here rather than inferred downstream, which is what turns
+     * the cache-hit rate into a measured metric. On a miss the inner bridge's own
+     * provider-reported usage is passed through unchanged, so decorating a bridge
+     * never downgrades its cost accounting to an estimate.
+     */
+    get lastCall(): BridgeCallInfo | undefined {
+        return this._lastCall;
+    }
+
     async generate(prompt: string, opts: BridgeGenerateOptions = {}): Promise<string> {
         const key = buildCacheKey({
             prompt,
@@ -58,10 +70,24 @@ export class CachingBridge implements TransformerBridge {
         });
 
         const cached = this._cache.get(key);
-        if (cached !== undefined) return cached;
+        if (cached !== undefined) {
+            this._lastCall = {
+                cacheHit : true,
+                cacheTier: 'exact',
+                usage    : {
+                    model            : opts.model ?? 'unknown',
+                    inputTokens      : 0,
+                    outputTokens     : 0,
+                    localCacheHit    : true,
+                },
+            };
+            return cached;
+        }
 
         const value = await this._inner.generate(prompt, opts);
         this._cache.set(key, value, Date.now());
+        const inner = this._inner.lastCall;
+        this._lastCall = { cacheHit: false, ...(inner?.usage ? { usage: inner.usage } : {}) };
         return value;
     }
 

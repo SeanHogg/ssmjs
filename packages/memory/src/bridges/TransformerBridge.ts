@@ -7,6 +7,10 @@
  * shape works, no base class required.
  */
 
+import type { BridgeCallInfo } from '../telemetry/types.js';
+
+export type { BridgeCallInfo };
+
 export interface BridgeGenerateOptions {
     /** Max tokens to generate. Default per-adapter (typically 512). */
     maxTokens?    : number;
@@ -26,6 +30,18 @@ export interface TransformerBridge {
      * Must resolve to the assistant's reply text only (not including the prompt).
      */
     generate(prompt: string, opts?: BridgeGenerateOptions): Promise<string>;
+
+    /**
+     * Usage and cache outcome of the most recent `generate()`/`stream()`.
+     *
+     * Optional so third-party bridges stay valid, but every bridge in this package
+     * populates it: it is what lets `InstrumentedBridge` report *provider-measured*
+     * tokens and cost instead of a character-count estimate, and what lets the
+     * caching decorators declare a hit so the cache-hit rate is a fact rather than
+     * an inference. Not concurrency-safe by design — read it immediately after the
+     * call, or use `InstrumentedBridge`, which does.
+     */
+    readonly lastCall?: BridgeCallInfo;
 
     /**
      * Streaming variant — yields tokens incrementally.

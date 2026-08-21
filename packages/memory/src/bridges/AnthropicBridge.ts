@@ -6,7 +6,8 @@
  */
 
 import { SSMError } from '../errors/SSMError.js';
-import type { TransformerBridge, BridgeGenerateOptions } from './TransformerBridge.js';
+import type { LlmUsage } from '../telemetry/types.js';
+import type { TransformerBridge, BridgeGenerateOptions, BridgeCallInfo } from './TransformerBridge.js';
 
 export interface AnthropicBridgeOptions {
     /** Anthropic API key. */
@@ -46,6 +47,8 @@ export class AnthropicBridge implements TransformerBridge {
     private readonly _maxTokens   : number;
     private readonly _cacheSystem : boolean;
 
+    private _lastCall: BridgeCallInfo | undefined;
+
     constructor(opts: AnthropicBridgeOptions) {
         this._apiKey       = opts.apiKey;
         this._model        = opts.model      ?? 'claude-haiku-4-5';
@@ -53,6 +56,16 @@ export class AnthropicBridge implements TransformerBridge {
         this._systemPrompt = opts.systemPrompt ?? '';
         this._maxTokens    = opts.maxTokens    ?? 1024;
         this._cacheSystem  = opts.cacheSystem  ?? true;
+    }
+
+    /**
+     * Provider-reported usage for the last call. Anthropic splits input tokens
+     * three ways — fresh, cache read, and cache write — and each is billed at a
+     * different rate, so a cost model that only reads `input_tokens` is wrong on
+     * exactly the cache-heavy traffic this bridge is tuned to produce.
+     */
+    get lastCall(): BridgeCallInfo | undefined {
+        return this._lastCall;
     }
 
     async generate(prompt: string, opts: BridgeGenerateOptions = {}): Promise<string> {
@@ -72,6 +85,12 @@ export class AnthropicBridge implements TransformerBridge {
         if (typeof content !== 'string') {
             throw new SSMError('BRIDGE_RESPONSE_INVALID', 'Unexpected Anthropic response shape.');
         }
+        this._lastCall = {
+            usage: readAnthropicUsage(
+                (json as any).usage,
+                (json as any).model ?? opts.model ?? this._model,
+            ),
+        };
         return content;
     }
 
@@ -91,7 +110,32 @@ export class AnthropicBridge implements TransformerBridge {
             throw new SSMError('BRIDGE_RESPONSE_INVALID', 'Anthropic streaming response has no body.');
         }
 
-        yield* parseAnthropicStream(res.body);
+        const model = opts.model ?? this._model;
+        let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, reportedModel = model;
+
+        yield* parseAnthropicStream(res.body, (event) => {
+            // `message_start` carries the input split; `message_delta` the running
+            // output count. Both are folded so the final usage is provider-measured.
+            const start = (event as any).message?.usage;
+            const delta = (event as any).usage;
+            const usage = start ?? delta;
+            if (!usage) return;
+            if (typeof (event as any).message?.model === 'string') reportedModel = (event as any).message.model;
+            input      = Math.max(input,      Number(usage.input_tokens) || 0);
+            output     = Math.max(output,     Number(usage.output_tokens) || 0);
+            cacheRead  = Math.max(cacheRead,  Number(usage.cache_read_input_tokens) || 0);
+            cacheWrite = Math.max(cacheWrite, Number(usage.cache_creation_input_tokens) || 0);
+        });
+
+        this._lastCall = {
+            usage: {
+                model: reportedModel,
+                inputTokens: input,
+                outputTokens: output,
+                cachedInputTokens: cacheRead,
+                cacheWriteTokens: cacheWrite,
+            },
+        };
     }
 
     private _buildBody(prompt: string, opts: BridgeGenerateOptions, stream: boolean): string {
@@ -129,7 +173,10 @@ export class AnthropicBridge implements TransformerBridge {
 
 // ── SSE parser (Anthropic event format) ──────────────────────────────────────
 
-async function* parseAnthropicStream(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
+async function* parseAnthropicStream(
+    body: ReadableStream<Uint8Array>,
+    onEvent?: (event: Record<string, unknown>) => void,
+): AsyncIterable<string> {
     const reader  = body.getReader();
     const decoder = new TextDecoder();
     let buffer    = '';
@@ -150,6 +197,7 @@ async function* parseAnthropicStream(body: ReadableStream<Uint8Array>): AsyncIte
                 const data = trimmed.slice(6);
                 try {
                     const event = JSON.parse(data) as Record<string, unknown>;
+                    onEvent?.(event);
                     // content_block_delta events carry the streamed text
                     if (event['type'] === 'content_block_delta') {
                         const text = (event as any).delta?.text;
@@ -163,4 +211,21 @@ async function* parseAnthropicStream(body: ReadableStream<Uint8Array>): AsyncIte
     } finally {
         reader.releaseLock();
     }
+}
+
+/**
+ * Maps an Anthropic `usage` object onto the canonical {@link LlmUsage} shape.
+ * Absent when the response omits usage (an older gateway shim), in which case
+ * `InstrumentedBridge` falls back to an estimate and flags it as such.
+ */
+function readAnthropicUsage(usage: unknown, model: string): LlmUsage | undefined {
+    if (!usage || typeof usage !== 'object') return undefined;
+    const u = usage as Record<string, unknown>;
+    return {
+        model,
+        inputTokens: Number(u['input_tokens']) || 0,
+        outputTokens: Number(u['output_tokens']) || 0,
+        cachedInputTokens: Number(u['cache_read_input_tokens']) || 0,
+        cacheWriteTokens: Number(u['cache_creation_input_tokens']) || 0,
+    };
 }

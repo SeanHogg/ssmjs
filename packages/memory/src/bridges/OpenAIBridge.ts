@@ -6,7 +6,8 @@
  */
 
 import { SSMError } from '../errors/SSMError.js';
-import type { TransformerBridge, BridgeGenerateOptions } from './TransformerBridge.js';
+import type { LlmUsage } from '../telemetry/types.js';
+import type { TransformerBridge, BridgeGenerateOptions, BridgeCallInfo } from './TransformerBridge.js';
 
 export interface OpenAIBridgeOptions {
     /** OpenAI API key (or compatible service key). */
@@ -22,6 +23,8 @@ export interface OpenAIBridgeOptions {
 }
 
 export class OpenAIBridge implements TransformerBridge {
+    private _lastCall: BridgeCallInfo | undefined;
+
     readonly supportsStreaming = true as const;
 
     private readonly _apiKey      : string;
@@ -36,6 +39,11 @@ export class OpenAIBridge implements TransformerBridge {
         this._baseUrl      = (opts.baseUrl     ?? 'https://api.openai.com/v1').replace(/\/$/, '');
         this._systemPrompt = opts.systemPrompt ?? '';
         this._maxTokens    = opts.maxTokens    ?? 512;
+    }
+
+    /** Provider-reported usage for the last call — see {@link BridgeCallInfo}. */
+    get lastCall(): BridgeCallInfo | undefined {
+        return this._lastCall;
     }
 
     async generate(prompt: string, opts: BridgeGenerateOptions = {}): Promise<string> {
@@ -55,6 +63,9 @@ export class OpenAIBridge implements TransformerBridge {
         if (typeof content !== 'string') {
             throw new SSMError('BRIDGE_RESPONSE_INVALID', 'Unexpected OpenAI response shape.');
         }
+        this._lastCall = {
+            usage: readOpenAIUsage((json as any).usage, (json as any).model ?? opts.model ?? this._model),
+        };
         return content;
     }
 
@@ -74,7 +85,17 @@ export class OpenAIBridge implements TransformerBridge {
             throw new SSMError('BRIDGE_RESPONSE_INVALID', 'OpenAI streaming response has no body.');
         }
 
-        yield* parseOpenAIStream(res.body);
+        const model = opts.model ?? this._model;
+        let usage: LlmUsage | undefined;
+
+        yield* parseOpenAIStream(res.body, (event) => {
+            // Only emitted because `_buildBody` sets `stream_options.include_usage`;
+            // without it OpenAI streams no usage at all and cost would be a guess.
+            const reported = readOpenAIUsage((event as any).usage, (event as any).model ?? model);
+            if (reported) usage = reported;
+        });
+
+        this._lastCall = usage ? { usage } : {};
     }
 
     private _buildBody(prompt: string, opts: BridgeGenerateOptions, stream: boolean): string {
@@ -90,6 +111,10 @@ export class OpenAIBridge implements TransformerBridge {
             temperature: opts.temperature ?? 0.7,
             top_p      : opts.topP        ?? 0.9,
             stream,
+            // Without this the streaming response carries no usage block, so
+            // cost-per-request on streamed calls would silently fall back to an
+            // estimate. Non-streaming requests reject the field, hence the guard.
+            ...(stream ? { stream_options: { include_usage: true } } : {}),
         });
     }
 
@@ -107,7 +132,10 @@ export class OpenAIBridge implements TransformerBridge {
 
 // ── SSE parser ────────────────────────────────────────────────────────────────
 
-async function* parseOpenAIStream(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
+async function* parseOpenAIStream(
+    body: ReadableStream<Uint8Array>,
+    onEvent?: (event: Record<string, unknown>) => void,
+): AsyncIterable<string> {
     const reader  = body.getReader();
     const decoder = new TextDecoder();
     let buffer    = '';
@@ -140,4 +168,20 @@ async function* parseOpenAIStream(body: ReadableStream<Uint8Array>): AsyncIterab
     } finally {
         reader.releaseLock();
     }
+}
+
+/** Maps an OpenAI `usage` object onto the canonical {@link LlmUsage} shape. */
+function readOpenAIUsage(usage: unknown, model: string): LlmUsage | undefined {
+    if (!usage || typeof usage !== 'object') return undefined;
+    const u = usage as Record<string, unknown>;
+    const cached = Number((u['prompt_tokens_details'] as Record<string, unknown> | undefined)?.['cached_tokens']) || 0;
+    const prompt = Number(u['prompt_tokens']) || 0;
+    return {
+        model,
+        // OpenAI reports `prompt_tokens` INCLUSIVE of cached tokens; the canonical
+        // shape keeps them disjoint so the two rates are applied exactly once each.
+        inputTokens: Math.max(0, prompt - cached),
+        outputTokens: Number(u['completion_tokens']) || 0,
+        cachedInputTokens: cached,
+    };
 }
