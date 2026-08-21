@@ -105,6 +105,9 @@ importers:
       '@seanhogg/builderforce-memory':
         specifier: workspace:*
         version: link:../memory
+      '@seanhogg/builderforce-memory-engine':
+        specifier: workspace:*
+        version: link:../memory-engine
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.41

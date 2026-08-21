@@ -15,7 +15,8 @@
  */
 
 import { z } from "zod";
-import type { MemoryBackend, RecallHit } from "./backend.js";
+import type { MemoryBackend, RankedRecall, RecallHit, RecallMethod, RememberInput } from "./backend.js";
+import { DEFAULT_STUB_CHARS, planCompaction, type CompactionSkip } from "./compaction.js";
 
 /** The MCP CallToolResult shape both server frameworks expect. */
 export interface ToolResult {
@@ -63,15 +64,58 @@ function fail(text: string): ToolResult {
     return { content: [{ type: "text", text }], isError: true };
 }
 
-function renderHits(hits: RecallHit[], maxChars: number): string {
-    if (hits.length === 0) return "No matching memories.";
-    return hits
-        .map((h) => {
-            const tags = h.tags?.length ? ` tags=[${h.tags.join(", ")}]` : "";
-            const score = h.score != null ? ` score=${h.score.toFixed(3)}` : "";
-            return `• ${h.key}${score}${tags}\n  ${clip(h.content, maxChars)}`;
-        })
-        .join("\n");
+/**
+ * How the ordering was produced, in one line the model can read.
+ *
+ * A semantic ranking that silently degraded to word overlap is indistinguishable
+ * from one that did not - which is exactly how "recall got worse" stays invisible.
+ * Naming the ranker (the same `embedding` / `lexical` vocabulary the gateway's
+ * Evermind recall result reports) makes the degrade legible instead.
+ */
+const RANKER_LINE: Record<RecallMethod, string> = {
+    embedding: "Ranked by: semantic recall (SSM embedding fused with lexical).",
+    lexical: "Ranked by: lexical recall (fallback - no embedding model loaded).",
+};
+
+function renderHits(hits: RecallHit[], maxChars: number, method?: RecallMethod): string {
+    const ranker = method ? `\n${RANKER_LINE[method]}` : "";
+    if (hits.length === 0) return `No matching memories.${ranker}`;
+    return (
+        hits
+            .map((h) => {
+                const tags = h.tags?.length ? ` tags=[${h.tags.join(", ")}]` : "";
+                const score = h.score != null ? ` score=${h.score.toFixed(3)}` : "";
+                return `• ${h.key}${score}${tags}\n  ${clip(h.content, maxChars)}`;
+            })
+            .join("\n") + ranker
+    );
+}
+
+/**
+ * Recall through the backend's BEST available path: `recallRanked` when the backend
+ * can name its ranker, plain `recall` otherwise. One helper, so every recall-shaped
+ * tool reports the method identically - or stays silent identically.
+ */
+async function rankedRecall(
+    backend: MemoryBackend,
+    query: string,
+    topK: number,
+): Promise<Partial<RankedRecall> & { hits: RecallHit[] }> {
+    if (backend.recallRanked) return backend.recallRanked(query, topK);
+    return { hits: await backend.recall(query, topK) };
+}
+
+const SKIP_REASONS: Record<CompactionSkip["reason"], string> = {
+    not_found: "not found",
+    already_compacted: "already compacted",
+    not_smaller: "already shorter than its stub",
+};
+
+/** One-line compaction receipt: what shrank, what it saved, and what was left alone. */
+function renderCompaction(compacted: number, bytesSaved: number, skipped: CompactionSkip[]): string {
+    const lines = [`Compacted ${compacted} memory(ies), ${bytesSaved} character(s) reclaimed.`];
+    for (const s of skipped) lines.push(`• skipped ${s.key} — ${SKIP_REASONS[s.reason]}`);
+    return lines.join("\n");
 }
 
 /**
@@ -107,8 +151,8 @@ export function buildMemoryTools(backend: MemoryBackend, opts: MemoryToolsOption
                     const query = String(args["query"] ?? "");
                     if (!query.trim()) return fail("query is required.");
                     const k = Math.min(maxResults, Number(args["topK"] ?? maxResults));
-                    const hits = await backend.recall(query, k);
-                    return ok(renderHits(hits.slice(0, maxResults), maxContent));
+                    const ranked = await rankedRecall(backend, query, k);
+                    return ok(renderHits(ranked.hits.slice(0, maxResults), maxContent, ranked.method));
                 } catch (err) {
                     return fail(`recall failed: ${String(err)}`);
                 }
@@ -192,6 +236,83 @@ export function buildMemoryTools(backend: MemoryBackend, opts: MemoryToolsOption
                     return ok(`Remembered "${key}".`);
                 } catch (err) {
                     return fail(`remember failed: ${String(err)}`);
+                }
+            },
+        });
+    }
+
+    // memory_compact — the FIRST-CLASS compaction path. It writes through the live
+    // store (get → plan → remember), so a durable backend's in-memory state and its
+    // on-disk snapshot agree afterwards. Compacting the snapshot file behind the
+    // server's back instead is what races: the server still holds the full bodies and
+    // re-snapshots over them on its next write. Requires read + write, so it is
+    // registered alongside the other write tools.
+    if (writable && backend.remember) {
+        tools.push({
+            name: "memory_compact",
+            description:
+                "Shrink memories that have already been absorbed elsewhere (folded into a model, " +
+                "summarised into a longer-lived note) down to a one-line pointer stub, reclaiming the " +
+                "context they were eating. Call this AFTER something durable has learned the facts — " +
+                "never as a way to tidy up, because the full body is gone afterwards. Already-compacted " +
+                "keys are skipped, so repeating the call is safe.",
+            inputSchema: {
+                keys: z.array(z.string()).min(1).describe("Exact keys of the memories to compact."),
+                stub: z
+                    .string()
+                    .optional()
+                    .describe(
+                        "Explicit replacement body applied to every listed key. Omit to generate " +
+                            "'[absorbed→Evermind vN] <first line>' from each entry's own first line.",
+                    ),
+                version: z
+                    .number()
+                    .int()
+                    .min(0)
+                    .optional()
+                    .describe("Version of the model that absorbed these facts; appears in the generated stub."),
+                maxChars: z
+                    .number()
+                    .int()
+                    .min(20)
+                    .max(500)
+                    .optional()
+                    .describe(`Max characters of the generated pointer line (default ${DEFAULT_STUB_CHARS}).`),
+            },
+            handler: async (args) => {
+                try {
+                    const raw = args["keys"];
+                    const keys = Array.isArray(raw) ? raw.map((k) => String(k)).filter(Boolean) : [];
+                    if (keys.length === 0) return fail("keys is required.");
+
+                    // ONE read pass: the hit carries both the body the plan reasons about
+                    // and the tags/importance the rewrite must preserve.
+                    const hits = new Map<string, RecallHit>();
+                    for (const key of keys) {
+                        const hit = await backend.get(key);
+                        if (hit) hits.set(key, hit);
+                    }
+
+                    const plan = planCompaction(keys.map((key) => ({ key, content: hits.get(key)?.content })), {
+                        stub: typeof args["stub"] === "string" ? (args["stub"] as string) : undefined,
+                        version: args["version"] == null ? undefined : Number(args["version"]),
+                        maxChars: args["maxChars"] == null ? undefined : Number(args["maxChars"]),
+                    });
+
+                    // Preserve tags/importance — compaction shortens a body, it does not
+                    // reclassify the fact.
+                    const writes: RememberInput[] = plan.writes.map((w) => {
+                        const prev = hits.get(w.key);
+                        return { key: w.key, content: w.content, tags: prev?.tags, importance: prev?.importance };
+                    });
+                    if (writes.length > 0) {
+                        if (backend.rememberMany) await backend.rememberMany(writes);
+                        else for (const w of writes) await backend.remember!(w);
+                    }
+
+                    return ok(renderCompaction(plan.writes.length, plan.bytesSaved, plan.skipped));
+                } catch (err) {
+                    return fail(`compact failed: ${String(err)}`);
                 }
             },
         });

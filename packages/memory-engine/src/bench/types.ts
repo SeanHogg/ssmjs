@@ -119,3 +119,96 @@ export interface TrainAndBenchmarkResult extends BenchmarkReport {
   /** A short greedy generation from {@link TrainAndBenchmarkOptions.prompt}. */
   sample: string;
 }
+
+// ── Adaptation cost ───────────────────────────────────────────────────────────
+
+/**
+ * Knobs for {@link benchmarkAdaptationCost} — the measured COST of on-prem
+ * adaptation, as opposed to the quality metrics above.
+ *
+ * The defaults bracket what the on-prem host actually runs today
+ * (`agent-runtime/src/infra/project-evermind-delta.ts`, mirrored by the cloud
+ * coordinator): 64-token training windows, ONE epoch per contribution, over at
+ * most 4000 characters of run text, with contributions under 20 characters
+ * skipped before any work happens.
+ */
+export interface AdaptationCostOptions {
+  /** Corpus the tokenizer is learned from and the adaptation trains on. */
+  text?: string;
+  /** Tokens per training window. Default `[32, 64, 128]` (production: 64). */
+  windowTokens?: number[];
+  /** Epochs per adaptation. Default `[1, 2, 4]` (production: 1). */
+  epochs?: number[];
+  /**
+   * Fraction of incoming contributions skipped before any work, 0..1. The
+   * on-prem skip is a floor on contribution length (`MIN_TEXT_CHARS`), so this is
+   * that floor expressed as how often it fires. Default `[0, 0.5]`.
+   */
+  skipRates?: number[];
+  /** Adaptation requests issued per grid point. Default 4. */
+  requests?: number;
+  /** BPE merges learned for the tokenizer. Default 120. */
+  numMerges?: number;
+  /** Model channel dimension. Default 32. */
+  dModel?: number;
+  /** Number of (conv + MoE) blocks. Default 2. */
+  numLayers?: number;
+  /** MoE expert FFN hidden width. Default 48. */
+  hiddenDim?: number;
+  /** AdamW learning rate for the adaptation fits. Default 0.01. */
+  lr?: number;
+  /** Deterministic seed for model init. Default 7. */
+  seed?: number;
+  /** Monotonic clock in ms, injectable for deterministic tests. */
+  now?: () => number;
+}
+
+/** Measured cost at one (window, epochs, skipRate) point of the grid. */
+export interface AdaptationCostPoint {
+  /** Tokens per training window. */
+  windowTokens: number;
+  /** Epochs run per adaptation. */
+  epochs: number;
+  /** Fraction of requests skipped before any work. */
+  skipRate: number;
+  /** Adaptation requests issued at this point. */
+  requests: number;
+  /** Requests that actually ran a fit (the rest were skipped). */
+  adapted: number;
+  /** Training windows fitted, summed over the adaptations that ran. */
+  sequences: number;
+  /**
+   * AdamW steps issued: one per window per epoch (the trainer's default, with
+   * gradient accumulation pinned to 1 so the count is exact).
+   */
+  optimizerSteps: number;
+  /**
+   * Block positions pushed through the model, read from
+   * `EvermindLM.positionsEvaluated`. Hardware-independent and exact — this is the
+   * quantity a cost curve should be asserted on; wall time is what it costs HERE.
+   */
+  positionsEvaluated: number;
+  /** Wall-clock milliseconds spent inside the fits. */
+  elapsedMs: number;
+  /** Milliseconds per 1000 evaluated positions — the machine's unit cost. */
+  msPerKPosition: number;
+  /** Wall-clock milliseconds per adaptation that actually ran (0 when all skipped). */
+  msPerAdaptation: number;
+}
+
+/** The adaptation-cost scorecard: one point per (window, epochs, skipRate). */
+export interface AdaptationCostReport {
+  points: AdaptationCostPoint[];
+  /** Tokens the source text produced (the adaptation's input size). */
+  textTokens: number;
+  /** Learned tokenizer vocabulary size. */
+  vocabSize: number;
+  /** Model channel dimension the grid was measured on. */
+  dModel: number;
+  /** Number of blocks the grid was measured on. */
+  numLayers: number;
+  /** MoE expert hidden width the grid was measured on. */
+  hiddenDim: number;
+  /** Trainable scalar parameters — what one optimiser step touches. */
+  paramCount: number;
+}

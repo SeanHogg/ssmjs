@@ -118,3 +118,63 @@ export class AdamW {
     return n;
   }
 }
+
+// ── The CPU mirror of WEIGHT_UPDATE_WGSL ─────────────────────────────────────
+
+/** Hyperparameters of one {@link adamwUpdateInPlace} step. */
+export interface AdamWKernelStep {
+  lr: number;
+  beta1: number;
+  beta2: number;
+  eps: number;
+  weightDecay: number;
+  /** beta1^t — the precomputed bias-correction term (matches the kernel uniform). */
+  beta1_t: number;
+  /** beta2^t. */
+  beta2_t: number;
+  /** Trust region: max |Δθ| per step. 0 disables the bound. */
+  maxDelta: number;
+  /** Global gradient-clip factor, applied to `grad` on the fly (1 = no clipping). */
+  gradScale?: number;
+}
+
+/**
+ * One AdamW step over a single parameter tensor — the exact CPU mirror of the
+ * `adamw_update` entry point in `WEIGHT_UPDATE_WGSL`, including its two safety
+ * properties:
+ *
+ *   • the **NaN/Inf guard** — a non-finite step is dropped rather than written
+ *     into a weight, so one bad gradient cannot permanently poison the model;
+ *   • the **trust region** — `maxDelta` bounds how far a single step can move a
+ *     weight, which is what keeps repeated write-through adapts reversible.
+ *
+ * Decoupled weight decay (`θ * (1 - lr·wd)`), matching the kernel — deliberately
+ * NOT the coupled form {@link AdamW} uses for the MoE/EvermindLM trainers.
+ *
+ * `param`, `m` and `v` are updated in place.
+ */
+export function adamwUpdateInPlace(
+  param: Float32Array,
+  grad: Float32Array,
+  m: Float32Array,
+  v: Float32Array,
+  hp: AdamWKernelStep,
+): void {
+  const { lr, beta1, beta2, eps, weightDecay, beta1_t, beta2_t, maxDelta } = hp;
+  const gradScale = hp.gradScale ?? 1;
+  const bc1 = 1 - beta1_t;
+  const bc2 = 1 - beta2_t;
+  for (let i = 0; i < param.length; i++) {
+    const g = grad[i]! * gradScale;
+    const mNew = beta1 * m[i]! + (1 - beta1) * g;
+    const vNew = beta2 * v[i]! + (1 - beta2) * g * g;
+    m[i] = mNew;
+    v[i] = vNew;
+
+    let step = (lr * (mNew / bc1)) / (Math.sqrt(vNew / bc2) + eps);
+    if (!Number.isFinite(step)) step = 0;
+    if (maxDelta > 0) step = Math.min(maxDelta, Math.max(-maxDelta, step));
+
+    param[i] = param[i]! * (1 - lr * weightDecay) - step;
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "@seanhogg/builderforce-memory-mcp",
-  "version": "2026.7.14",
+  "version": "2026.8.20",
   "mcpName": "io.github.SeanHogg/builderforce-memory",
   "description": "BuilderForce Agent Memory \u2014 MCP transport. Exposes @seanhogg/builderforce-memory to any MCP client (Claude Agent SDK in-process, stdio, or HTTP) over a pluggable MemoryBackend, with token-saving fetch-on-demand recall.",
   "type": "module",
@@ -27,7 +27,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsc && node --test tests/install.test.mjs tests/tools.test.mjs tests/http.test.mjs",
+    "test": "tsc && node --test tests/install.test.mjs tests/tools.test.mjs tests/http.test.mjs tests/compaction.test.mjs tests/recall-method.test.mjs",
     "lint": "eslint src/",
     "prepublishOnly": "npm run build",
     "typecheck:native": "tsgo --noEmit"
@@ -60,6 +60,7 @@
   "peerDependencies": {
     "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
     "@seanhogg/builderforce-memory": "^2026.7.13",
+    "@seanhogg/builderforce-memory-engine": "^2026.7.13",
     "fake-indexeddb": "^6.0.0"
   },
   "peerDependenciesMeta": {
@@ -69,6 +70,9 @@
     "@seanhogg/builderforce-memory": {
       "optional": true
     },
+    "@seanhogg/builderforce-memory-engine": {
+      "optional": true
+    },
     "fake-indexeddb": {
       "optional": true
     }
@@ -76,6 +80,7 @@
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
     "@seanhogg/builderforce-memory": "workspace:*",
+    "@seanhogg/builderforce-memory-engine": "workspace:*",
     "@types/node": "^20.0.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",

@@ -1,6 +1,6 @@
 {
   "name": "@seanhogg/builderforce-memory-engine",
-  "version": "2026.7.14",
+  "version": "2026.8.20",
   "description": "BuilderForce Agent Memory — engine layer. TypeScript/WGSL Mamba SSM kernels, model blocks, autograd, training, and BPE tokenizer (zero runtime deps, WebGPU-native).",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -21,6 +21,7 @@
   "scripts": {
     "build": "tsc",
     "serve": "node serve.js",
+    "bench:adapt": "npm run build && node scripts/bench-adaptation.mjs",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "lint": "eslint src/ tests/",
     "prepare": "npm run build",
@@ -85,6 +86,7 @@
           "tsconfig": {
             "module": "ES2022",
             "moduleResolution": "bundler",
+            "rootDir": ".",
             "strict": true,
             "esModuleInterop": true,
             "skipLibCheck": true,

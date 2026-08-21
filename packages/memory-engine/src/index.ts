@@ -40,10 +40,13 @@ export type {
 } from './moe/index.js';
 
 // ── EvermindLM (the generative model) + AdamW ──────────────────────────────────
-export { EvermindLM, EvermindLMTrainer, DEFAULT_LM_CONFIG, DEFAULT_LM_SEED } from './lm/index.js';
-export type { EvermindLMConfig, LMGenerateOptions, TextCodec, EvermindLMTrainOptions } from './lm/index.js';
-export { AdamW } from './optim/adamw.js';
-export type { AdamWOptions, OptimTarget, OptimParam, ShardSpec } from './optim/adamw.js';
+export { EvermindLM, EvermindLMTrainer, DEFAULT_LM_CONFIG, DEFAULT_LM_SEED, logProbOfToken } from './lm/index.js';
+// CPU text→vector embedder — SSM-embedding recall with no GPU.
+export { EvermindTextEmbedder } from './lm/index.js';
+export type { EvermindLMConfig, LMGenerateOptions, TextCodec, EvermindLMTrainOptions, EvermindLMDecodeState } from './lm/index.js';
+export type { TextEmbedder, EmbedderCodec } from './lm/index.js';
+export { AdamW, adamwUpdateInPlace } from './optim/adamw.js';
+export type { AdamWOptions, OptimTarget, OptimParam, ShardSpec, AdamWKernelStep } from './optim/adamw.js';
 
 // PEFT / efficient-training toolkit (LoRA, QLoRA, mixed precision, checkpointing).
 export { LoRAAdapter, EvermindLMLoRA, quantizeBase } from './training/lora.js';
@@ -53,7 +56,29 @@ export type { LossScalerOptions } from './training/mixed_precision.js';
 
 // ── Training ──────────────────────────────────────────────────────────────────
 
-export { MambaTrainer } from './training/trainer.js';
+export { MambaTrainer, cpuDimsFor, buildChunks, buildBatches, WSLA_MAX_DELTA } from './training/trainer.js';
+export type { TrainOptions } from './training/trainer.js';
+// The exact CPU forward + backward the trainer differentiates with. Exported so a
+// host can compute gradients (or gradient-check the model) without a GPU.
+export {
+    cpuModelForward, cpuModelLoss, cpuModelBackward,
+    zeroCpuModelGrads, toNamedGrads, namedWeights, cpuWeightsFromNamed,
+    paramMatrixShape, DEFAULT_LORA_TARGETS, CPU_GRADIENT_LAYER_TYPES,
+} from './training/model_cpu.js';
+export type {
+    CpuModelDims, CpuModelWeights, CpuModelGrads, CpuBackwardResult, CpuBackwardOptions, CpuGradientLayerType,
+} from './training/model_cpu.js';
+export {
+    mamba1CpuForward, mamba1CpuBackward, zeroMamba1Grads,
+    MAMBA1_PARAM_NAMES, A_LOG_CLAMP_LO, A_LOG_CLAMP_HI,
+} from './training/mamba1_cpu.js';
+export type {
+    Mamba1CpuWeights, Mamba1CpuDims, Mamba1CpuCache, Mamba1CpuGrads, Mamba1CpuForwardResult,
+} from './training/mamba1_cpu.js';
+export {
+    linearForward, linearBackward, rmsNormForward, rmsNormBackward,
+    silu, siluGrad, softplus, sigmoid, RMSNORM_EPS,
+} from './training/cpu_ops.js';
 export {
     Tensor,
     backward,
@@ -68,6 +93,7 @@ export {
 // ── Tokenizer ─────────────────────────────────────────────────────────────────
 
 export { BPETokenizer } from './tokenizer/bpe.js';
+export type { BPETokenizerSpec } from './tokenizer/bpe.js';
 export type { BPEEncodeOptions, PadSide, HuggingFaceTokenizerSpec, SpecialTokenOverrides } from './tokenizer/bpe.js';
 
 // ── Modality codecs (media ⇄ tokens; lets EvermindLM generate video) ────────────
@@ -129,6 +155,34 @@ export {
 } from './import/index.js';
 export type { ImportOptions } from './import/index.js';
 
+// ── Foreign weight port (Falcon-Mamba / Codestral-Mamba → HybridMambaModel) ────
+// Transformer checkpoints are NOT portable — distillation is the only route, and
+// `foreignMambaAdapterFor` rejects them saying so.
+
+export {
+    FOREIGN_MAMBA_ADAPTERS,
+    foreignMambaAdapterFor,
+    portForeignMamba,
+    portForeignMambaSafetensors,
+    applyPortedWeights,
+    executePortPlan,
+    normaliseSourceName,
+    falconMambaAdapter,
+    codestralMambaAdapter,
+} from './import/index.js';
+export type {
+    ForeignConfig,
+    ForeignMambaAdapter,
+    PortTarget,
+    PortDiscard,
+    PortOp,
+    PortPlan,
+    PortRule,
+    PortedCheckpoint,
+    PortedTensors,
+    SynthesisedTarget,
+} from './import/index.js';
+
 // ── Benchmarking (held-out perplexity / accuracy / throughput + A/B) ──────────
 
 export {
@@ -139,6 +193,10 @@ export {
     compareReports,
     corpusToSequences,
     trainAndBenchmark,
+    benchmarkAdaptationCost,
+    formatAdaptationCostReport,
+    tokenWindows,
+    adaptationsAfterSkip,
     argmax as benchArgmax,
     topKIndices,
     perplexity,
@@ -153,6 +211,9 @@ export type {
     ComparisonReport,
     TrainAndBenchmarkOptions,
     TrainAndBenchmarkResult,
+    AdaptationCostOptions,
+    AdaptationCostPoint,
+    AdaptationCostReport,
 } from './bench/index.js';
 
 // ── Checkpoint integrity (CRC-32 + trailer) ───────────────────────────────────
@@ -228,6 +289,7 @@ export { CONV1D_FORWARD_WGSL, CONV1D_BACKWARD_WGSL }
     from './kernels/conv1d.js';
 export { LINEAR_FORWARD_WGSL, LINEAR_BACKWARD_WGSL }
     from './kernels/linear_projection.js';
+export { COL_SLICE_WGSL, COL_SLICE_ENTRY, dispatchColumnSlice } from './kernels/slice.js';
 export { WEIGHT_UPDATE_WGSL, GRAD_CLIP_WGSL }
     from './kernels/weight_update.js';
 export { ACTIVATIONS_WGSL, ACTIVATIONS_BACKWARD_WGSL, SOFTMAX_FORWARD_WGSL, SOFTMAX_BACKWARD_WGSL }

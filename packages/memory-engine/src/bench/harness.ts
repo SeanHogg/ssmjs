@@ -23,7 +23,7 @@ import type {
 } from "./types.js";
 
 /** A monotonic clock, preferring `performance.now()` when present. */
-function defaultNow(): number {
+export function defaultNow(): number {
   const g = globalThis as { performance?: { now(): number } };
   return typeof g.performance?.now === "function" ? g.performance.now() : Date.now();
 }

@@ -2,13 +2,19 @@
  * MemoryStoreBackend — local adapter mapping @seanhogg/builderforce-memory's MemoryStore
  * onto the MemoryBackend seam.
  *
- * Recall quality: when an SSM runtime is supplied it is forwarded to
- * `recallSimilar`, so recall uses SSM-embedding cosine similarity and improves
- * as the model is adapted/distilled. With no runtime it transparently falls
- * back to Jaccard word-overlap (still useful, just lexical).
+ * Recall quality: when a text embedder is supplied it is forwarded to the store's
+ * `recallRanked`, so the ordering is the shared hybrid retrieval — the SSM
+ * embedding's cosine ranking FUSED with BM25 by Reciprocal Rank Fusion — and it
+ * sharpens as the model is adapted/distilled. With no embedder the same call
+ * degrades to the lexical ranking alone. Either way the backend reports which of
+ * the two produced the ordering (`method`), so a silent degrade is visible.
+ *
+ * The embedder does NOT have to be a GPU runtime: `EvermindTextEmbedder` from the
+ * engine is a pure-CPU `EvermindLM`, which is what lets the headless stdio server
+ * rank recall semantically (see ./evermind-embedder.ts).
  */
 
-import type { MemoryBackend, RecallHit, RememberInput } from "../backend.js";
+import type { MemoryBackend, RankedRecall, RecallHit, RememberInput } from "../backend.js";
 
 // Structural views of the @seanhogg/builderforce-memory surface we use, so this package
 // type-checks without a hard dependency on the runtime package.
@@ -25,14 +31,20 @@ interface MemoryStoreLike {
     recall(key: string): Promise<MemoryEntryLike | undefined>;
     recallAll(): Promise<MemoryEntryLike[]>;
     recallByTag(tag: string): Promise<MemoryEntryLike[]>;
-    recallSimilar(query: string, topK: number, runtime?: unknown): Promise<MemoryEntryLike[]>;
+    /** Hybrid (dense⊕BM25) recall with each hit's fused score and the ranker used. */
+    recallRanked(
+        query: string,
+        topK: number,
+        runtime?: unknown,
+    ): Promise<{ hits: Array<{ entry: MemoryEntryLike; score: number }>; method: "embedding" | "lexical" }>;
     forget(key: string): Promise<void>;
 }
 
-function toHit(e: MemoryEntryLike): RecallHit {
+function toHit(e: MemoryEntryLike, score?: number): RecallHit {
     return {
         key: e.key,
         content: e.content,
+        ...(score === undefined ? {} : { score }),
         tags: e.tags,
         importance: e.importance,
         timestamp: e.timestamp,
@@ -46,9 +58,14 @@ export class MemoryStoreBackend implements MemoryBackend {
         private readonly runtime?: unknown,
     ) {}
 
+    /** Plain recall — {@link recallRanked} with the ranker's name dropped. ONE path. */
     async recall(query: string, topK: number): Promise<RecallHit[]> {
-        const entries = await this.store.recallSimilar(query, topK, this.runtime);
-        return entries.map(toHit);
+        return (await this.recallRanked(query, topK)).hits;
+    }
+
+    async recallRanked(query: string, topK: number): Promise<RankedRecall> {
+        const ranked = await this.store.recallRanked(query, topK, this.runtime);
+        return { hits: ranked.hits.map((h) => toHit(h.entry, h.score)), method: ranked.method };
     }
 
     async get(key: string): Promise<RecallHit | undefined> {
@@ -69,6 +86,11 @@ export class MemoryStoreBackend implements MemoryBackend {
         });
     }
 
+    /** The store has no batch write; sequencing here keeps ONE definition of a write. */
+    async rememberMany(inputs: RememberInput[]): Promise<void> {
+        for (const input of inputs) await this.remember(input);
+    }
+
     async forget(key: string): Promise<void> {
         await this.store.forget(key);
     }
@@ -79,9 +101,11 @@ export interface LocalBackendOptions {
     /** IndexedDB database name. Defaults to MemoryStore's own default ('ssmjs'). */
     dbName?: string;
     /**
-     * Optional SSMRuntime for embedding-based recall. Omit for lexical (Jaccard)
-     * recall. In the agent-runtime, pass `ssmMemoryService.runtime` here to reuse
-     * the already-loaded Evermind runtime instead of standing up a second model.
+     * Optional text embedder — anything with `embed(text): Promise<Float32Array>`.
+     * Omit for lexical-only recall. Pass the agent-runtime's
+     * `ssmMemoryService.runtime` to reuse an already-loaded GPU Evermind, or an
+     * `EvermindTextEmbedder` (pure CPU) via {@link createEvermindEmbedder} on a
+     * headless host.
      */
     runtime?: unknown;
     /**
@@ -93,6 +117,10 @@ export interface LocalBackendOptions {
      * When set, the store is hydrated from the file on creation and re-snapshotted
      * after every remember/forget, giving durable cross-process memory. TTLs are
      * dropped on persist: the snapshot is the durable long-term tier.
+     *
+     * The file is also WATCHED: it is a shared artifact (other processes compact it
+     * in place), so the store re-hydrates from disk whenever it changed underneath —
+     * see {@link DiskPersistedBackend} for the loop guard.
      */
     persistFile?: string;
 }
@@ -110,16 +138,70 @@ type FsLike = {
     writeFileSync(path: string, data: string): void;
     mkdirSync(path: string, opts: { recursive: boolean }): void;
     existsSync(path: string): boolean;
+    statSync(path: string): { mtimeMs: number; size: number };
 };
 type PathLike = { dirname(p: string): string };
+
+/** Identity of the snapshot file as this process last left it. */
+interface FileStamp {
+    mtimeMs: number;
+    size: number;
+    /** Digest of the exact bytes — settles the case where a file is touched but unchanged. */
+    hash: string;
+}
+
+/**
+ * FNV-1a over the snapshot text. Non-cryptographic on purpose: this only has to
+ * separate "someone rewrote the file" from "the mtime moved but the bytes are
+ * ours", and node:crypto is deliberately not imported here (this module must stay
+ * bundleable for the browser, where the disk path is never taken).
+ */
+function contentHash(text: string): string {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(16);
+}
+
+/** Parse a snapshot's text into its durable entries, or null when unusable. */
+function parseSnapshot(text: string): SnapshotEntry[] | null {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(text);
+    } catch {
+        return null;
+    }
+    if (!Array.isArray(parsed)) return null;
+    return (parsed as SnapshotEntry[]).filter(
+        (raw) => !!raw && typeof raw.key === "string" && typeof raw.content === "string",
+    );
+}
 
 /**
  * Wraps a MemoryStoreBackend so every write is mirrored to a JSON file, and
  * hydrates that file back into the store on boot. This is what turns a respawned
  * stdio subprocess into a persistent memory: the store itself is in-memory, the
  * file is the source of truth across process lifetimes.
+ *
+ * It also WATCHES the file for external edits. The snapshot is a shared artifact —
+ * the BuilderForce VS Code extension compacts absorbed entries by rewriting it
+ * directly, and a second server instance may be mirroring the same path. Without a
+ * watch this server, still holding the pre-edit bodies, would silently re-snapshot
+ * over that work on its very next remember/forget; the edit would only stick once
+ * the client respawned the subprocess. So every operation first calls
+ * {@link DiskPersistedBackend.ensureFresh}, which re-hydrates the store from disk
+ * when — and only when — the file changed underneath us.
+ *
+ * The loop guard is the {@link FileStamp} recorded immediately AFTER each of our own
+ * writes: the next check stats the file, sees the same mtime+size, and returns
+ * without reading a byte. A stat per call is the entire steady-state cost.
  */
 class DiskPersistedBackend implements MemoryBackend {
+    /** How the file looked when this process last wrote or read it. */
+    private stamp: FileStamp | null = null;
+
     constructor(
         private readonly inner: MemoryStoreBackend,
         private readonly store: MemoryStoreLike,
@@ -127,24 +209,97 @@ class DiskPersistedBackend implements MemoryBackend {
         private readonly fs: FsLike,
     ) {}
 
-    recall(query: string, topK: number): Promise<RecallHit[]> {
+    async recall(query: string, topK: number): Promise<RecallHit[]> {
+        await this.ensureFresh();
         return this.inner.recall(query, topK);
     }
-    get(key: string): Promise<RecallHit | undefined> {
+    async recallRanked(query: string, topK: number): Promise<RankedRecall> {
+        await this.ensureFresh();
+        return this.inner.recallRanked(query, topK);
+    }
+    async get(key: string): Promise<RecallHit | undefined> {
+        await this.ensureFresh();
         return this.inner.get(key);
     }
-    recallByTag(tag: string, limit: number): Promise<RecallHit[]> {
+    async recallByTag(tag: string, limit: number): Promise<RecallHit[]> {
+        await this.ensureFresh();
         return this.inner.recallByTag(tag, limit);
     }
 
     async remember(input: RememberInput): Promise<void> {
+        await this.ensureFresh();
         await this.inner.remember(input);
         await this.snapshot();
     }
 
+    /** Batch write — ONE snapshot for the whole set, so compacting N keys is not N full rewrites. */
+    async rememberMany(inputs: RememberInput[]): Promise<void> {
+        await this.ensureFresh();
+        await this.inner.rememberMany(inputs);
+        await this.snapshot();
+    }
+
     async forget(key: string): Promise<void> {
+        await this.ensureFresh();
         await this.inner.forget(key);
         await this.snapshot();
+    }
+
+    /**
+     * Re-read the snapshot into the store when the file changed since we last
+     * touched it. Also the BOOT hydration: with no stamp yet, an existing file is
+     * always read in — one routine, so disk and memory can never diverge by taking
+     * two different paths.
+     */
+    async ensureFresh(): Promise<void> {
+        if (!this.fs.existsSync(this.file)) return;
+
+        let st: { mtimeMs: number; size: number };
+        try {
+            st = this.fs.statSync(this.file);
+        } catch {
+            return;
+        }
+        // Fast path: byte-for-byte what we last wrote. No read, no parse, no writes.
+        if (this.stamp && st.mtimeMs === this.stamp.mtimeMs && st.size === this.stamp.size) return;
+
+        let text: string;
+        try {
+            text = this.fs.readFileSync(this.file, "utf8");
+        } catch {
+            return;
+        }
+        const hash = contentHash(text);
+        // Touched (mtime moved) but identical content — re-stamp, don't re-hydrate.
+        if (this.stamp && hash === this.stamp.hash) {
+            this.stamp = { mtimeMs: st.mtimeMs, size: st.size, hash };
+            return;
+        }
+
+        const entries = parseSnapshot(text);
+        // Corrupt/partial snapshot (a half-written file, say): keep what we have
+        // rather than wiping the live store, and leave the stamp alone so the next
+        // call re-checks.
+        if (!entries) return;
+
+        await this.replaceStore(entries);
+        this.stamp = { mtimeMs: st.mtimeMs, size: st.size, hash };
+    }
+
+    /**
+     * Make the in-memory store equal the snapshot: drop keys the file no longer has,
+     * then replay every entry (a re-remember overwrites, so a body shortened to a
+     * stub on disk becomes the stub in memory). Replayed as durable — TTLs are
+     * dropped on persist; the snapshot is the long-term tier.
+     */
+    private async replaceStore(entries: SnapshotEntry[]): Promise<void> {
+        const wanted = new Set(entries.map((e) => e.key));
+        for (const existing of await this.store.recallAll()) {
+            if (!wanted.has(existing.key)) await this.store.forget(existing.key);
+        }
+        for (const raw of entries) {
+            await this.store.remember(raw.key, raw.content, { tags: raw.tags, importance: raw.importance });
+        }
     }
 
     private async snapshot(): Promise<void> {
@@ -155,24 +310,16 @@ class DiskPersistedBackend implements MemoryBackend {
             tags: e.tags,
             importance: e.importance,
         }));
-        this.fs.writeFileSync(this.file, JSON.stringify(out, null, 2));
-    }
-}
-
-/** Reads a snapshot file and replays it into the store as durable (no-TTL) entries. */
-async function hydrateFromDisk(store: MemoryStoreLike, file: string, fs: FsLike): Promise<void> {
-    if (!fs.existsSync(file)) return;
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-    } catch {
-        // Corrupt/partial snapshot — start clean rather than crash the server.
-        return;
-    }
-    if (!Array.isArray(parsed)) return;
-    for (const raw of parsed as SnapshotEntry[]) {
-        if (!raw || typeof raw.key !== "string" || typeof raw.content !== "string") continue;
-        await store.remember(raw.key, raw.content, { tags: raw.tags, importance: raw.importance });
+        const json = JSON.stringify(out, null, 2);
+        this.fs.writeFileSync(this.file, json);
+        // Stamp OUR write immediately — this is what stops the watch above from
+        // treating our own output as an external edit (and looping).
+        try {
+            const st = this.fs.statSync(this.file);
+            this.stamp = { mtimeMs: st.mtimeMs, size: st.size, hash: contentHash(json) };
+        } catch {
+            this.stamp = null;
+        }
     }
 }
 
@@ -212,6 +359,8 @@ export async function createLocalMemoryStoreBackend(opts: LocalBackendOptions = 
     const dir = path.dirname(opts.persistFile);
     if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-    await hydrateFromDisk(store, opts.persistFile, fs);
-    return new DiskPersistedBackend(backend, store, opts.persistFile, fs);
+    const persisted = new DiskPersistedBackend(backend, store, opts.persistFile, fs);
+    // Boot hydration IS the freshness check with no stamp yet — see ensureFresh().
+    await persisted.ensureFresh();
+    return persisted;
 }

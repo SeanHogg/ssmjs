@@ -2,8 +2,12 @@
  * EvermindLM — the generative language model (the runnable "AI").
  */
 
-export { EvermindLM, EvermindLMTrainer, DEFAULT_LM_CONFIG, DEFAULT_LM_SEED } from "./evermind_lm.js";
-export type { EvermindLMConfig, LMGenerateOptions, TextCodec, EvermindLMTrainOptions } from "./evermind_lm.js";
+export { EvermindLM, EvermindLMTrainer, DEFAULT_LM_CONFIG, DEFAULT_LM_SEED, logProbOfToken } from "./evermind_lm.js";
+export type { EvermindLMConfig, LMGenerateOptions, TextCodec, EvermindLMTrainOptions, EvermindLMDecodeState } from "./evermind_lm.js";
+
+// CPU text→vector embedder (semantic recall with no GPU).
+export { EvermindTextEmbedder } from "./text_embedder.js";
+export type { TextEmbedder, EmbedderCodec } from "./text_embedder.js";
 
 // PEFT / efficient-training toolkit (LoRA, QLoRA, mixed precision).
 export { LoRAAdapter, EvermindLMLoRA, quantizeBase } from "../training/lora.js";

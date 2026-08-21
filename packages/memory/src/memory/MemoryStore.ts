@@ -36,6 +36,26 @@ export interface MemoryEntry {
     importance?: number;
 }
 
+/**
+ * Which ranker produced a recall ordering. Matches the vocabulary the gateway's
+ * Evermind recall/validate surfaces already report, so a host can render one chip
+ * ("Semantic recall" / "Lexical recall (fallback)") regardless of which layer
+ * answered.
+ */
+export type RecallMethod = 'embedding' | 'lexical';
+
+/** A recalled entry with its relevance score (higher = closer). */
+export interface ScoredMemory {
+    entry: MemoryEntry;
+    score: number;
+}
+
+/** A ranked recall: the hits plus the ranker that ordered them. */
+export interface RankedRecall {
+    hits: ScoredMemory[];
+    method: RecallMethod;
+}
+
 export interface RememberOptions {
     /** Override the store-level defaultTtlMs for this entry. */
     ttlMs?     : number;
@@ -390,8 +410,32 @@ export class MemoryStore {
         runtime?: SSMRuntimeRef,
         opts?: HybridRetrieveOptions,
     ): Promise<MemoryEntry[]> {
+        return (await this.recallRanked(query, topK, runtime, opts)).hits.map(h => h.entry);
+    }
+
+    /**
+     * The hybrid retrieval path with its evidence attached: each hit's fused score,
+     * plus WHICH ranker produced the ordering.
+     *
+     * {@link recallHybrid} is the convenience wrapper that throws both away, so
+     * there is exactly one implementation of the blend — and it is the shared
+     * `hybridRetrieve` → `reciprocalRankFusion` primitive, never a second hand-
+     * rolled mix of cosine and word overlap.
+     *
+     * `method` is honest rather than aspirational: `'embedding'` means the query
+     * really did embed and the dense ranking really did participate in the fusion;
+     * `'lexical'` means no model was available (or embedding failed) and the
+     * ordering is BM25 alone. Callers surface it so a user can tell semantic
+     * recall from the fallback instead of guessing.
+     */
+    async recallRanked(
+        query: string,
+        topK: number,
+        runtime?: SSMRuntimeRef,
+        opts?: HybridRetrieveOptions,
+    ): Promise<RankedRecall> {
         const all = await this.recallAll();
-        if (all.length === 0) return [];
+        if (all.length === 0) return { hits: [], method: 'lexical' };
 
         // Embed candidates + query where a runtime is available; null vectors are
         // fine — hybridRetrieve degrades that candidate to BM25-only.
@@ -400,13 +444,21 @@ export class MemoryStore {
 
         const candidates: RetrievalCandidate[] = [];
         for (const entry of all) {
-            const vector = canEmbed ? (await this._embedWithCache(runtime, entry.content)) ?? undefined : undefined;
+            const vector = queryVec ? (await this._embedWithCache(runtime, entry.content)) ?? undefined : undefined;
             candidates.push({ id: entry.key, text: entry.content, vector });
         }
 
+        // The dense ranking only exists when the query embedded AND at least one
+        // candidate did — anything less is a lexical ordering wearing a label.
+        const dense = !!queryVec && candidates.some(c => !!c.vector);
         const hits = hybridRetrieve({ text: query, vector: queryVec }, candidates, { topK, annThreshold: this._annThreshold, ...opts });
         const byKey = new Map(all.map(e => [e.key, e]));
-        return hits.map(h => byKey.get(h.id)).filter((e): e is MemoryEntry => !!e);
+        return {
+            hits: hits
+                .map(h => { const entry = byKey.get(h.id); return entry ? { entry, score: h.score } : null; })
+                .filter((h): h is ScoredMemory => !!h),
+            method: dense ? 'embedding' : 'lexical',
+        };
     }
 
     /**

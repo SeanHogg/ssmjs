@@ -132,20 +132,26 @@ fn forward_scan(
         // ---- Kogge-Stone inclusive prefix scan within tile ----
         // Associative operator: (a1, b1) ∘ (a2, b2) = (a1*a2, a1*b2 + b1)
         // This computes cumulative state recurrence in log2(TILE) steps.
+        // NOTE the barrier placement. Both barriers MUST sit in uniform control
+        // flow — every invocation in the workgroup has to reach them. The earlier
+        // version put the first workgroupBarrier() INSIDE the if (lid >= stride)
+        // branch, which is a WGSL uniformity violation: shader creation fails on a
+        // conformant implementation. Computing into locals first, then writing
+        // back after a uniform barrier, is the correct read-then-write split.
         var stride: u32 = 1u;
         loop {
             if (stride >= TILE) { break; }
+            var new_a  = wg_a[lid];
+            var new_bu = wg_bu[lid];
             if (lid >= stride) {
-                let prev_a  = wg_a[lid - stride];
-                let prev_bu = wg_bu[lid - stride];
-                // Combine: new_state = prev_a * cur_a (product of A_bars)
-                //                      new_bu  = prev_a * cur_bu + prev_bu
-                let new_a  = prev_a * wg_a[lid];
-                let new_bu = prev_a * wg_bu[lid] + prev_bu;
-                workgroupBarrier();
-                wg_a[lid]  = new_a;
-                wg_bu[lid] = new_bu;
+                // Combine: new_a  = prev_a * cur_a (product of A_bars)
+                //          new_bu = prev_a * cur_bu + prev_bu
+                new_a  = wg_a[lid - stride] * new_a;
+                new_bu = wg_a[lid - stride] * new_bu + wg_bu[lid - stride];
             }
+            workgroupBarrier();
+            wg_a[lid]  = new_a;
+            wg_bu[lid] = new_bu;
             workgroupBarrier();
             stride = stride << 1u;
         }

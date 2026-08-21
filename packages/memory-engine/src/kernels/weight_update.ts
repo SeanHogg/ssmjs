@@ -79,6 +79,20 @@ fn adamw_update(
 
 // Gradient clipping kernel – clips global gradient norm to max_norm.
 // Run before weight updates.  Two-pass: first compute squared norm, then scale.
+//
+// The accumulator is a REAL atomic. It used to be a plain `array<f32>` written as
+// `norm_sq[0] = norm_sq[0] + local_sq[0]` by the lane-0 invocation of every
+// workgroup — a read-modify-write with no synchronisation, so with more than one
+// workgroup (i.e. any tensor above 256 elements) concurrent workgroups lost each
+// other's contributions and the norm came out too SMALL, under-clipping exactly
+// when clipping matters most. WGSL has no `atomic<f32>`, so the accumulator is an
+// `atomic<u32>` holding the f32 bit pattern and updated with a
+// compare-exchange loop — the standard portable float-atomic-add.
+//
+// Summation ORDER across workgroups is not deterministic (floating-point addition
+// is not associative), so the norm can differ in the last ulp or two between runs.
+// That is fine for a clip threshold and is the accepted trade for correctness;
+// nothing downstream depends on a bit-exact norm.
 export const GRAD_CLIP_WGSL: string = /* wgsl */`
 
 struct ClipParams {
@@ -88,9 +102,22 @@ struct ClipParams {
 
 @group(0) @binding(0) var<uniform>             clip_p  : ClipParams;
 @group(0) @binding(1) var<storage, read_write> grad    : array<f32>;
-@group(0) @binding(2) var<storage, read_write> norm_sq : array<f32>;  // size 1, atomic accumulator
+// size 1 – the f32 bit pattern of the accumulated sum of squares, updated
+// atomically. Zero-initialise it by writing 0.0f (bit pattern 0x00000000).
+@group(0) @binding(2) var<storage, read_write> norm_sq : array<atomic<u32>>;
 
 var<workgroup> local_sq : array<f32, 256>;
+
+// Portable atomic add on an f32 stored as its u32 bit pattern.
+fn atomic_add_f32(value: f32) {
+    var old_bits : u32 = atomicLoad(&norm_sq[0]);
+    loop {
+        let new_bits = bitcast<u32>(bitcast<f32>(old_bits) + value);
+        let res = atomicCompareExchangeWeak(&norm_sq[0], old_bits, new_bits);
+        if (res.exchanged) { break; }
+        old_bits = res.old_value;
+    }
+}
 
 // Pass 1: reduce sum of squares into norm_sq[0]
 @compute @workgroup_size(256, 1, 1)
@@ -117,8 +144,7 @@ fn grad_norm_reduce(
     }
 
     if (lid == 0u) {
-        // Non-atomic accumulation (single workgroup assumption for small models)
-        norm_sq[0] = norm_sq[0] + local_sq[0];
+        atomic_add_f32(local_sq[0]);
     }
 }
 
@@ -130,7 +156,7 @@ fn grad_clip_scale(
     let i = gid.x;
     if (i >= clip_p.num_elements) { return; }
 
-    let ns = norm_sq[0];
+    let ns = bitcast<f32>(atomicLoad(&norm_sq[0]));
     if (ns > clip_p.max_norm_sq) {
         let scale = sqrt(clip_p.max_norm_sq / ns);
         grad[i] = grad[i] * scale;

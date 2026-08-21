@@ -8,7 +8,14 @@
  */
 
 // ── Seam ────────────────────────────────────────────────────────────────────
-export type { MemoryBackend, RecallHit, RememberInput } from "./backend.js";
+export type { MemoryBackend, RankedRecall, RecallHit, RecallMethod, RememberInput } from "./backend.js";
+
+// -- CPU SSM-embedding recall (no GPU) --------------------------------------
+// The headless servers rank recall by EvermindLM embedding cosine fused with the
+// lexical ranking whenever a checkpoint is configured; exported so an embedding
+// host can build the same embedder (and share its persistent vector cache).
+export { createRecallEmbedder, createEvermindEmbedder, CachedTextEmbedder, defaultVectorCacheFile, MODEL_FILE_ENV, TOKENIZER_FILE_ENV, VECTOR_CACHE_ENV } from "./embedding/index.js";
+export type { EvermindEmbedderOptions, PersistentTextEmbedder, TextEmbedderLike, RecallEmbedderEnv } from "./embedding/index.js";
 
 // ── Local backend (IndexedDB via @seanhogg/builderforce-memory) ────────────────────────
 export { MemoryStoreBackend, createLocalMemoryStoreBackend } from "./backends/memory-store.js";
@@ -17,6 +24,13 @@ export type { LocalBackendOptions } from "./backends/memory-store.js";
 // ── Tool core ─────────────────────────────────────────────────────────────────
 export { buildMemoryTools } from "./tools.js";
 export type { MemoryTool, MemoryToolsOptions, ToolResult } from "./tools.js";
+
+// ── Compaction (absorbed fact → one-line pointer stub) ───────────────────────
+// Exported so an EXTERNAL compactor (the BuilderForce VS Code extension rewrites
+// the snapshot file directly) can produce byte-identical stubs, keeping the two
+// paths idempotent with respect to each other.
+export { STUB_PREFIX, DEFAULT_STUB_CHARS, isStub, firstLine, memoryStub, planCompaction } from "./compaction.js";
+export type { CompactionCandidate, CompactionWrite, CompactionSkip, CompactionPlan, CompactionOptions } from "./compaction.js";
 
 // ── Transports ──────────────────────────────────────────────────────────────
 export { createMemoryMcpServer } from "./transports/sdk.js";

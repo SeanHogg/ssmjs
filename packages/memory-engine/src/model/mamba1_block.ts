@@ -20,6 +20,7 @@ import { gaussianArray } from '../utils/rng.js';
 import { CONV1D_FORWARD_WGSL }          from '../kernels/conv1d.js';
 import { LINEAR_FORWARD_WGSL }          from '../kernels/linear_projection.js';
 import { ACTIVATIONS_WGSL }             from '../kernels/activations.js';
+import { COL_SLICE_WGSL, COL_SLICE_ENTRY, dispatchColumnSlice } from '../kernels/slice.js';
 
 import type { SequenceLayer, LayerForwardResult, LayerParam } from './sequence_layer.js';
 
@@ -210,6 +211,7 @@ export class Mamba1Block implements SequenceLayer {
             rmsnorm     : createComputePipeline(d, ACTIVATIONS_WGSL,             'rmsnorm_forward'),
             scan_fwd    : createComputePipeline(d, SELECTIVE_SCAN_FORWARD_WGSL,  'forward_scan'),
             scan_reduce : createComputePipeline(d, SELECTIVE_SCAN_FORWARD_WGSL,  'forward_reduce'),
+            colSlice    : createComputePipeline(d, COL_SLICE_WGSL, COL_SLICE_ENTRY),
             elMul       : createComputePipeline(d, MUL_SHADER, 'main'),
             elAdd       : createComputePipeline(d, ADD_SHADER, 'main'),
         };
@@ -253,14 +255,18 @@ export class Mamba1Block implements SequenceLayer {
             dispatchKernel(d, this.pipelines['linear']!, bg, [cdiv(M, 16), cdiv(2 * D, 16), 1]);
         }
 
-        // 3. Split into x and z
+        // 3. Split into x and z.
+        //    in_proj writes (M, 2D) ROW-major, so x and z are interleaved COLUMN
+        //    slices — one per row — not two contiguous halves of the buffer. A
+        //    `copyBufferToBuffer` of the first M*D floats is only the right answer
+        //    when M == 1; for any real sequence it hands the block the first half of
+        //    the ROWS twice. Split with a strided gather instead.
         const xConvIn = createEmptyStorageBuffer(d, M * D * 4, true);
         const zBuf    = createEmptyStorageBuffer(d, M * D * 4, true);
         {
-            const enc = d.createCommandEncoder();
-            enc.copyBufferToBuffer(inProjOut, 0,         xConvIn, 0, M * D * 4);
-            enc.copyBufferToBuffer(inProjOut, M * D * 4, zBuf,    0, M * D * 4);
-            d.queue.submit([enc.finish()]);
+            const slice = this.pipelines['colSlice']!;
+            dispatchColumnSlice(d, slice, inProjOut, xConvIn, M, 2 * D, 0, D);
+            dispatchColumnSlice(d, slice, inProjOut, zBuf, M, 2 * D, D, D);
         }
         inProjOut.destroy();
         cache.zBuf    = zBuf;
@@ -270,7 +276,11 @@ export class Mamba1Block implements SequenceLayer {
         const convOut = createEmptyStorageBuffer(d, M * D * 4, true);
         cache.convOut = convOut;
         {
-            const params = new Uint32Array([L, D, dConv, B]).buffer;
+            // ConvParams is FIVE u32s (seq_len, d_channels, kernel_size, batch,
+            // groups). A four-element uniform is smaller than the struct's minimum
+            // binding size and WebGPU rejects the bind group outright. groups = 1
+            // is standard depthwise, matching Mamba-2/3's call.
+            const params = new Uint32Array([L, D, dConv, B, 1]).buffer;
             const pBuf   = createUniformBuffer(d, params);
             const bg = createBindGroup(d, this.pipelines['conv1d']!,
                 [pBuf, xConvIn, this.gpuWeights['wConv']!, this.gpuWeights['bConv']!, convOut]);
@@ -298,15 +308,17 @@ export class Mamba1Block implements SequenceLayer {
             dispatchKernel(d, this.pipelines['linear']!, bg, [cdiv(M, 16), cdiv(R + 2 * N, 16), 1]);
         }
 
+        //    Same story as the (x, z) split: Δ, B and C are COLUMN slices of the
+        //    (M, R+2N) projection, so they need a strided gather, not a prefix copy.
         const dtRaw = createEmptyStorageBuffer(d, M * R * 4, true);
         const B_raw = createEmptyStorageBuffer(d, B * L * N * 4, true);
         const C_raw = createEmptyStorageBuffer(d, B * L * N * 4, true);
         {
-            const enc = d.createCommandEncoder();
-            enc.copyBufferToBuffer(xProjOut, 0,               dtRaw, 0, M * R * 4);
-            enc.copyBufferToBuffer(xProjOut, M * R * 4,       B_raw, 0, B * L * N * 4);
-            enc.copyBufferToBuffer(xProjOut, M * (R + N) * 4, C_raw, 0, B * L * N * 4);
-            d.queue.submit([enc.finish()]);
+            const P = R + 2 * N;
+            const slice = this.pipelines['colSlice']!;
+            dispatchColumnSlice(d, slice, xProjOut, dtRaw, M, P, 0, R);
+            dispatchColumnSlice(d, slice, xProjOut, B_raw, M, P, R, N);
+            dispatchColumnSlice(d, slice, xProjOut, C_raw, M, P, R + N, N);
         }
         xProjOut.destroy();
         cache.B_raw = B_raw;
@@ -335,7 +347,11 @@ export class Mamba1Block implements SequenceLayer {
             const bg1 = createBindGroup(d, this.pipelines['scan_fwd']!,
                 [pBuf, siluOut, deltaFull, this.gpuWeights['A_log']!, B_raw, C_raw,
                  this.gpuWeights['D_vec']!, scanY, hCache]);
-            dispatchKernel(d, this.pipelines['scan_fwd']!, bg1, [cdiv(D, 8), cdiv(N, 8), B]);
+            // One workgroup per (d, n, batch): the kernel reads `wgid.x` as d and
+            // `wgid.y` as n, so the grid must be D x N x B. Dispatching
+            // ceil(D/8) x ceil(N/8) left all but a 1/64th corner of the state
+            // matrix unscanned (and unwritten in h_cache).
+            dispatchKernel(d, this.pipelines['scan_fwd']!, bg1, [D, N, B]);
 
             const bg2 = createBindGroup(d, this.pipelines['scan_reduce']!,
                 [pBuf, siluOut, deltaFull, this.gpuWeights['A_log']!, B_raw, C_raw,

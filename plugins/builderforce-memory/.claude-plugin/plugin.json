@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "builderforce-memory",
   "displayName": "Builderforce Memory",
-  "version": "2026.7.14",
+  "version": "2026.8.20",
   "description": "Token-saving persistent memory for Claude Code. Recall durable facts instead of re-reading files or history, with a session digest, contextual per-prompt recall, and autonomous capture of corrections you would otherwise repeat.",
   "author": {
     "name": "Sean Hogg",

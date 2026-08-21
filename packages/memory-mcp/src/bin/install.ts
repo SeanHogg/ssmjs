@@ -112,6 +112,6 @@ if (results.length === 0) {
     );
 } else {
     process.stdout.write(
-        `\nDone — ${wrote} config(s) written. Store: ${memoryFile}\nRestart the agent(s) to connect. Tools: memory_recall · memory_remember · memory_get · memory_recall_by_tag · memory_forget\n`,
+        `\nDone — ${wrote} config(s) written. Store: ${memoryFile}\nRestart the agent(s) to connect. Tools: memory_recall · memory_remember · memory_get · memory_recall_by_tag · memory_forget · memory_compact\n`,
     );
 }

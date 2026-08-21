@@ -102,8 +102,36 @@ export interface LMGenerateOptions {
   stopToken?: number;
 }
 
+/**
+ * Incremental decode state — everything a continuation needs from the prefix.
+ *
+ * The model's only cross-position dependency is the depthwise causal conv, whose
+ * receptive field is `convKernel` positions, so the entire "KV cache" is the
+ * trailing `convKernel - 1` normalised conv inputs per layer. That makes an exact
+ * prefix cache cheap: process a prompt once, then extend it with each candidate
+ * continuation for the cost of the candidate alone.
+ */
+export interface EvermindLMDecodeState {
+  /** [layer][slot] the trailing `convKernel - 1` RMSNormed conv inputs, oldest first. */
+  convWindow: Float32Array[][];
+  /** Positions consumed so far. */
+  length: number;
+  /** Logits at the LAST consumed position — what predicts the next token. */
+  lastLogits: Float32Array | null;
+}
+
 export class EvermindLM {
   readonly config: Required<Omit<EvermindLMConfig, "seed">>;
+
+  /**
+   * Token-positions pushed through a block since the last {@link resetStats}.
+   *
+   * The cost metric that matters for the tool-calling path: scoring N candidate
+   * tool names used to replay the WHOLE prompt N times, so this counted
+   * N x (prompt + candidate) x layers. With {@link stepDecode} the prompt is paid
+   * for once. Exposed so a benchmark can assert the saving rather than assume it.
+   */
+  private _positionsEvaluated = 0;
 
   /** Tied token embedding / output head: vocabSize × dModel (row-major). */
   emb: Float32Array;
@@ -201,46 +229,79 @@ export class EvermindLM {
    * instead of retaining every layer's cache at once.
    */
   private _forwardLayer(l: number, layerIn: Float32Array[]): { afterMoe: Float32Array[]; cache: LayerCache } {
-    const { dModel, convKernel } = this.config;
     const T = layerIn.length;
-    const ker = this.conv[l]!;
-    const nConv = this.nConv[l]!;
-    const nMoe = this.nMoe[l]!;
+    const window: Float32Array[] = [];
 
     const normedConv: Float32Array[] = [];
     const rmsConv: number[] = [];
-    for (let t = 0; t < T; t++) {
-      const { y, r } = rmsNorm(layerIn[t]!, nConv);
-      normedConv.push(y);
-      rmsConv.push(r);
-    }
     const afterConv: Float32Array[] = [];
-    for (let t = 0; t < T; t++) {
-      const out = Float32Array.from(layerIn[t]!); // residual base
-      for (let c = 0; c < dModel; c++) {
-        let acc = 0;
-        for (let j = 0; j < convKernel; j++) {
-          const ti = t - j;
-          if (ti >= 0) acc += ker[c * convKernel + j]! * normedConv[ti]![c]!;
-        }
-        out[c] = out[c]! + acc;
-      }
-      afterConv.push(out);
-    }
-
     const rmsMoe: number[] = [];
     const moeCache: MoECacheLike[] = [];
     const afterMoe: Float32Array[] = [];
+
     for (let t = 0; t < T; t++) {
-      const { y, r } = rmsNorm(afterConv[t]!, nMoe);
-      rmsMoe.push(r);
-      const out = Float32Array.from(afterConv[t]!); // residual base
-      const mr = this.moe[l]!.forward(y);
-      for (let c = 0; c < dModel; c++) out[c] = out[c]! + mr.output[c]!;
-      afterMoe.push(out);
-      moeCache.push(mr.cache as unknown as MoECacheLike);
+      const st = this._stepLayerPosition(l, layerIn[t]!, window);
+      normedConv.push(st.normed);
+      rmsConv.push(st.rmsConv);
+      afterConv.push(st.afterConv);
+      rmsMoe.push(st.rmsMoe);
+      moeCache.push(st.moeCache);
+      afterMoe.push(st.out);
     }
     return { afterMoe, cache: { layerIn, normedConv, rmsConv, afterConv, rmsMoe, moeCache } };
+  }
+
+  /**
+   * ONE position through one (conv + MoE) block, given the trailing conv window.
+   *
+   * The single place the block's maths lives: the batch path
+   * ({@link _forwardLayer}, which needs the full activation cache for backward)
+   * and the incremental path ({@link stepDecode}, which needs none of it) both
+   * run this, so they cannot drift apart. `window` holds the previous
+   * `convKernel - 1` RMSNormed conv inputs, OLDEST FIRST, and is advanced in
+   * place — a shorter window is exactly the causal zero-padding at the start of
+   * a sequence.
+   */
+  private _stepLayerPosition(
+    l: number,
+    xt: Float32Array,
+    window: Float32Array[],
+  ): { normed: Float32Array; rmsConv: number; afterConv: Float32Array; rmsMoe: number; moeCache: MoECacheLike; out: Float32Array } {
+    const { dModel, convKernel } = this.config;
+    const ker = this.conv[l]!;
+
+    const { y: normed, r: rConv } = rmsNorm(xt, this.nConv[l]!);
+    const afterConv = Float32Array.from(xt); // residual base
+    for (let c = 0; c < dModel; c++) {
+      let acc = ker[c * convKernel]! * normed[c]!;
+      for (let j = 1; j < convKernel; j++) {
+        const prev = window[window.length - j];   // position t - j, or undefined before the start
+        if (prev) acc += ker[c * convKernel + j]! * prev[c]!;
+      }
+      afterConv[c] = afterConv[c]! + acc;
+    }
+    window.push(normed);
+    while (window.length > convKernel - 1) window.shift();
+
+    const { y: normedMoe, r: rMoe } = rmsNorm(afterConv, this.nMoe[l]!);
+    const out = Float32Array.from(afterConv); // residual base
+    const mr = this.moe[l]!.forward(normedMoe);
+    for (let c = 0; c < dModel; c++) out[c] = out[c]! + mr.output[c]!;
+
+    this._positionsEvaluated++;
+    return {
+      normed, rmsConv: rConv, afterConv, rmsMoe: rMoe,
+      moeCache: mr.cache as unknown as MoECacheLike, out,
+    };
+  }
+
+  /** One token's embedding row (a copy — callers write into it). */
+  private _embedOne(tok: number): Float32Array {
+    const { dModel } = this.config;
+    const row = new Float32Array(dModel);
+    const off = tok * dModel;
+    for (let c = 0; c < dModel; c++) row[c] = this.emb[off + c]!;
+    return row;
   }
 
   /** Tied output head: logits_t[v] = x_t · emb[v]. */
@@ -268,6 +329,61 @@ export class EvermindLM {
       x = afterMoe;
     }
     return { logits: this._head(x), cache: { tokens, layers, finalX: x } };
+  }
+
+  /**
+   * Produces a single fixed-length embedding vector for a token sequence — the
+   * CPU counterpart of `HybridMambaModel.embed()`, to the same contract.
+   *
+   * Runs the full block stack and takes the final hidden state — i.e. exactly the
+   * state the tied LM head consumes in {@link forward} — then mean-pools across
+   * sequence positions and L2-normalises. The result has length `dModel`, so
+   * cosine similarity between two embeddings reduces to a dot product.
+   *
+   * Like the GPU path it skips the (expensive) head projection: it only needs the
+   * `dModel`-wide hidden state, not `vocabSize` logits. Unlike the GPU path it
+   * needs no WebGPU device at all, which is what lets a headless host (the stdio
+   * MCP server) rank recall by SSM embedding instead of word overlap.
+   *
+   * Streamed one position at a time through the SHARED block implementation
+   * ({@link _stepLayerPosition}, the same routine {@link forward} and
+   * {@link stepDecode} run), so it can never drift from them and it retains no
+   * per-position activation cache.
+   *
+   * The embedding reflects whatever the model currently knows — an untrained
+   * model behaves like a random projection of the token embeddings (still
+   * lexically discriminative), and the representation sharpens as the model is
+   * adapted/distilled.
+   */
+  embed(tokenIds: number[] | Uint32Array): Float32Array {
+    const { dModel, numLayers } = this.config;
+    const out = new Float32Array(dModel);
+    const seqLen = tokenIds.length;
+    if (seqLen === 0) return out;
+
+    // One rolling conv window per layer — a shorter window at the start of the
+    // sequence IS the causal zero-padding, exactly as in stepDecode.
+    const windows: Float32Array[][] = Array.from({ length: numLayers }, () => [] as Float32Array[]);
+    for (let t = 0; t < seqLen; t++) {
+      let x = this._embedOne(tokenIds[t]!);
+      for (let l = 0; l < numLayers; l++) x = this._stepLayerPosition(l, x, windows[l]!).out;
+      for (let c = 0; c < dModel; c++) out[c] = out[c]! + x[c]!;
+    }
+
+    // Mean-pool across positions.
+    for (let c = 0; c < dModel; c++) out[c] = out[c]! / seqLen;
+
+    // L2-normalise so cosine similarity reduces to a dot product.
+    let norm = 0;
+    for (let c = 0; c < dModel; c++) norm += out[c]! * out[c]!;
+    norm = Math.sqrt(norm) || 1;
+    for (let c = 0; c < dModel; c++) out[c] = out[c]! / norm;
+    return out;
+  }
+
+  /** Text-level embedding: encode with `codec`, then {@link embed}. */
+  embedText(text: string, codec: TextCodec): Float32Array {
+    return this.embed(codec.encode(text));
   }
 
   // ── Loss + backward ──────────────────────────────────────────────────────────
@@ -405,6 +521,80 @@ export class EvermindLM {
     return loss;
   }
 
+  // ── Incremental decoding (prefix cache) ──────────────────────────────────────
+
+  /** Positions pushed through a block since the last {@link resetStats}. */
+  get positionsEvaluated(): number { return this._positionsEvaluated; }
+  resetStats(): void { this._positionsEvaluated = 0; }
+
+  /** An empty decode state — the start of a sequence. */
+  newDecodeState(): EvermindLMDecodeState {
+    return {
+      convWindow: Array.from({ length: this.config.numLayers }, () => [] as Float32Array[]),
+      length: 0,
+      lastLogits: null,
+    };
+  }
+
+  /** Deep copy, so one prefix state can seed many independent continuations. */
+  cloneDecodeState(state: EvermindLMDecodeState): EvermindLMDecodeState {
+    return {
+      convWindow: state.convWindow.map((w) => w.map((v) => Float32Array.from(v))),
+      length: state.length,
+      lastLogits: state.lastLogits ? Float32Array.from(state.lastLogits) : null,
+    };
+  }
+
+  /**
+   * Consume `tokens` from `state`, returning the per-position logits and the
+   * ADVANCED state. `state` is not mutated — pass {@link cloneDecodeState} output
+   * or a fresh state; this clones internally so the caller's prefix stays reusable.
+   *
+   * Numerically identical to {@link forward} over the concatenated sequence: the
+   * shared {@link _stepLayerPosition} is the only implementation of the block.
+   */
+  stepDecode(state: EvermindLMDecodeState, tokens: number[]): { logits: Float32Array[]; state: EvermindLMDecodeState } {
+    const next = this.cloneDecodeState(state);
+    const logits: Float32Array[] = [];
+    for (const tok of tokens) {
+      let x = this._embedOne(tok);
+      for (let l = 0; l < this.config.numLayers; l++) {
+        x = this._stepLayerPosition(l, x, next.convWindow[l]!).out;
+      }
+      const lg = this._head([x])[0]!;
+      logits.push(lg);
+      next.lastLogits = lg;
+      next.length++;
+    }
+    return { logits, state: next };
+  }
+
+  /** Run a prompt once and keep the state, so continuations are cheap. */
+  prefixState(tokens: number[]): EvermindLMDecodeState {
+    return this.stepDecode(this.newDecodeState(), tokens).state;
+  }
+
+  /**
+   * Mean log-probability the model assigns to `continuation` following a cached
+   * prefix — the tool-decision vote, without replaying the prompt.
+   *
+   * Returns `-Infinity` for an empty continuation, and requires a prefix with at
+   * least one position (there must be a position to predict the first
+   * continuation token FROM).
+   */
+  scoreContinuation(prefix: EvermindLMDecodeState, continuation: number[]): number {
+    if (continuation.length === 0) return -Infinity;
+    if (!prefix.lastLogits) return -Infinity;
+    // The last prefix position predicts continuation[0]; each continuation
+    // position then predicts the next one, so the final one is never scored.
+    const { logits } = this.stepDecode(prefix, continuation.slice(0, -1));
+    let total = logProbOfToken(prefix.lastLogits, continuation[0]!);
+    for (let i = 1; i < continuation.length; i++) {
+      total += logProbOfToken(logits[i - 1]!, continuation[i]!);
+    }
+    return total / continuation.length;
+  }
+
   // ── Generation ───────────────────────────────────────────────────────────────
 
   /**
@@ -417,19 +607,24 @@ export class EvermindLM {
     return codec.decode(this.generate(codec.encode(prompt), opts));
   }
 
-  /** Greedy / temperature-sampled autoregressive generation. Returns NEW token ids. */
+  /**
+   * Greedy / temperature-sampled autoregressive generation. Returns NEW token ids.
+   *
+   * Carries an incremental decode state, so the prompt is processed ONCE and each
+   * new token costs one position. The previous implementation re-ran the whole
+   * sequence per token, making generation quadratic in the prompt length.
+   */
   generate(prompt: number[], opts: LMGenerateOptions): number[] {
     const temperature = opts.temperature ?? 0;
     const rng = temperature > 0 ? new SeededRng((opts.seed ?? 1) >>> 0 || 1) : null;
-    const tokens = [...prompt];
+    let state = this.stepDecode(this.newDecodeState(), prompt.length > 0 ? prompt : [0]).state;
     const produced: number[] = [];
     for (let n = 0; n < opts.maxNewTokens; n++) {
-      const { logits } = this.forward(tokens.length > 0 ? tokens : [0]);
-      const last = logits[logits.length - 1]!;
+      const last = state.lastLogits!;
       const next = rng ? sampleTemperature(last, temperature, rng) : argmax(last);
       produced.push(next);
-      tokens.push(next);
       if (opts.stopToken !== undefined && next === opts.stopToken) break;
+      state = this.stepDecode(state, [next]).state;
     }
     return produced;
   }
@@ -744,4 +939,19 @@ function sampleTemperature(logits: Float32Array, temperature: number, rng: Seede
     if (r <= 0) return i;
   }
   return probs.length - 1;
+}
+
+/**
+ * Log-probability the model assigned to `id` at a position, from that position's
+ * raw logits. Log-softmax computed max-shifted so a long-tail logit cannot
+ * overflow `exp`.
+ */
+export function logProbOfToken(row: Float32Array, id: number): number {
+  let max = -Infinity;
+  for (let i = 0; i < row.length; i++) { const v = row[i]!; if (v > max) max = v; }
+  if (!Number.isFinite(max)) return -Infinity;
+  let sum = 0;
+  for (let i = 0; i < row.length; i++) sum += Math.exp(row[i]! - max);
+  const logit = id >= 0 && id < row.length ? row[id]! : -Infinity;
+  return logit - (max + Math.log(sum));
 }

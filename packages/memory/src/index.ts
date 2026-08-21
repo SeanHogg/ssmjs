@@ -166,6 +166,9 @@ export type {
     MemoryStoreOptions,
     RememberOptions,
     FactType,
+    RecallMethod,
+    ScoredMemory,
+    RankedRecall,
 } from './memory/MemoryStore.js';
 
 // ── Cognition (Evermind — Write-Through Cognition) ────────────────────────────

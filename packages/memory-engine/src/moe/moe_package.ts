@@ -14,6 +14,7 @@
 import { SharedExpertMoE, type MoEConfig } from "./moe_model.js";
 import { EvermindLM, type EvermindLMConfig } from "../lm/evermind_lm.js";
 import { VideoRVQCodec } from "../codec/video_rvq.js";
+import { BPETokenizer } from "../tokenizer/bpe.js";
 
 /** First 4 bytes of a serialised package: "EVM1". */
 const PKG_MAGIC = 0x45564d31;
@@ -60,8 +61,27 @@ export interface EvermindModelManifest {
   checksum: number;
   /** Media codec section format (present for video/image packages). */
   codecFormat?: "VRQ0";
+  /**
+   * Byte length of the codec section — REQUIRED when a tokenizer section follows.
+   * Absent ⇒ the codec runs to end-of-blob (the original media layout).
+   */
+  codecBytes?: number;
   /** 32-bit FNV-1a over the codec bytes — integrity for the bundled codec. */
   codecChecksum?: number;
+  /**
+   * Embedded-tokenizer section format. Token ids are meaningless without the exact
+   * vocabulary that produced them, so a package that carries one is self-contained:
+   * a consumer no longer has to source the matching vocab separately (and can no
+   * longer pair the wrong one with it). Absent ⇒ no tokenizer embedded, which every
+   * package written before this field is — those still load exactly as before.
+   */
+  tokenizerFormat?: "BPE0";
+  /** Byte length of the tokenizer section (always last). */
+  tokenizerBytes?: number;
+  /** 32-bit FNV-1a over the tokenizer bytes. */
+  tokenizerChecksum?: number;
+  /** Vocabulary size of the embedded tokenizer — cross-checked against the model's. */
+  tokenizerVocabSize?: number;
   card: EvermindModelCard;
   /** ISO timestamp, caller-supplied (the engine avoids Date for determinism). */
   createdAt?: string;
@@ -73,6 +93,12 @@ export interface PackageMeta {
   card: EvermindModelCard;
   /** Store the checkpoint in fp16 (half the size). Default false. */
   fp16?: boolean;
+  /**
+   * Embed this tokenizer in the package, making the artifact self-contained.
+   * Its `vocabSize` must equal the model's, or packaging throws — a mismatched
+   * pair produces confident nonsense, which is worse than a failure to publish.
+   */
+  tokenizer?: BPETokenizer;
   createdAt?: string;
 }
 
@@ -102,12 +128,45 @@ export class EvermindModelPackage {
     readonly checkpoint: ArrayBuffer,
     /** Serialized media codec ("VRQ0" blob), present for video/image packages. */
     readonly codec?: ArrayBuffer,
+    /** Serialized BPE tokenizer ("BPE0" blob) — present when the package embeds one. */
+    readonly tokenizer?: ArrayBuffer,
   ) {}
+
+  /**
+   * Serialise `meta.tokenizer` and the manifest fields describing it, or `{}` when
+   * no tokenizer was supplied. Shared by every `from*` factory so the vocab-size
+   * cross-check exists in exactly one place.
+   */
+  private static _tokenizerSection(
+    meta: PackageMeta,
+    modelVocabSize: number | undefined,
+  ): { blob?: ArrayBuffer; fields: Partial<EvermindModelManifest> } {
+    if (!meta.tokenizer) return { fields: {} };
+    const vocabSize = meta.tokenizer.vocabSize;
+    if (modelVocabSize != null && vocabSize !== modelVocabSize) {
+      throw new Error(
+        `EvermindModelPackage: tokenizer vocabSize (${vocabSize}) must equal the model's (${modelVocabSize}) — ` +
+        "a mismatched pair decodes to nonsense.",
+      );
+    }
+    const blob = meta.tokenizer.serialize();
+    return {
+      blob,
+      fields: {
+        tokenizerFormat: "BPE0",
+        tokenizerBytes: blob.byteLength,
+        tokenizerChecksum: fnv1a(new Uint8Array(blob)),
+        tokenizerVocabSize: vocabSize,
+      },
+    };
+  }
 
   /** Package a trained model with its publishing metadata. */
   static fromModel(model: SharedExpertMoE, meta: PackageMeta): EvermindModelPackage {
     const fp16 = meta.fp16 ?? false;
     const checkpoint = model.exportWeights({ fp16 });
+    // A bare MoE layer has no vocabulary of its own, so there is nothing to cross-check.
+    const tokenizer = EvermindModelPackage._tokenizerSection(meta, undefined);
     const manifest: EvermindModelManifest = {
       schema: "evermind.model/1",
       name: meta.name,
@@ -117,17 +176,20 @@ export class EvermindModelPackage {
       paramCount: model.parameters().reduce((n, p) => n + p.numel, 0),
       checkpointFormat: "MoE0",
       checkpointFp16: fp16,
+      ...(tokenizer.blob ? { checkpointBytes: checkpoint.byteLength } : {}),
       checksum: fnv1a(new Uint8Array(checkpoint)),
+      ...tokenizer.fields,
       card: meta.card,
       ...(meta.createdAt ? { createdAt: meta.createdAt } : {}),
     };
-    return new EvermindModelPackage(manifest, checkpoint);
+    return new EvermindModelPackage(manifest, checkpoint, undefined, tokenizer.blob);
   }
 
   /** Package a trained generative {@link EvermindLM} — the runnable marketplace AI. */
   static fromLM(lm: EvermindLM, meta: PackageMeta): EvermindModelPackage {
     const fp16 = meta.fp16 ?? false;
     const checkpoint = lm.exportWeights({ fp16 });
+    const tokenizer = EvermindModelPackage._tokenizerSection(meta, lm.config.vocabSize);
     const manifest: EvermindModelManifest = {
       schema: "evermind.model/1",
       name: meta.name,
@@ -137,11 +199,13 @@ export class EvermindModelPackage {
       paramCount: lm.parameters().reduce((n, p) => n + p.data.length, 0),
       checkpointFormat: "EVL0",
       checkpointFp16: fp16,
+      ...(tokenizer.blob ? { checkpointBytes: checkpoint.byteLength } : {}),
       checksum: fnv1a(new Uint8Array(checkpoint)),
+      ...tokenizer.fields,
       card: meta.card,
       ...(meta.createdAt ? { createdAt: meta.createdAt } : {}),
     };
-    return new EvermindModelPackage(manifest, checkpoint);
+    return new EvermindModelPackage(manifest, checkpoint, undefined, tokenizer.blob);
   }
 
   /**
@@ -163,6 +227,7 @@ export class EvermindModelPackage {
     const fp16 = meta.fp16 ?? false;
     const checkpoint = lm.exportWeights({ fp16 });
     const codecBlob = codec.serialize();
+    const tokenizer = EvermindModelPackage._tokenizerSection(meta, lm.config.vocabSize);
     const manifest: EvermindModelManifest = {
       schema: "evermind.model/1",
       name: meta.name,
@@ -176,19 +241,28 @@ export class EvermindModelPackage {
       checkpointBytes: checkpoint.byteLength,
       checksum: fnv1a(new Uint8Array(checkpoint)),
       codecFormat: "VRQ0",
+      ...(tokenizer.blob ? { codecBytes: codecBlob.byteLength } : {}),
       codecChecksum: fnv1a(new Uint8Array(codecBlob)),
+      ...tokenizer.fields,
       card: meta.card,
       ...(meta.createdAt ? { createdAt: meta.createdAt } : {}),
     };
-    return new EvermindModelPackage(manifest, checkpoint, codecBlob);
+    return new EvermindModelPackage(manifest, checkpoint, codecBlob, tokenizer.blob);
   }
 
-  /** Serialise to a single `.evermind` blob: magic, version, manifest, checkpoint[, codec]. */
+  /**
+   * Serialise to a single `.evermind` blob: magic, version, manifest, checkpoint
+   * [, codec][, tokenizer]. Each section's length is fixed in the manifest whenever
+   * another section follows it, so the reader never has to guess where one ends.
+   */
   toBlob(): ArrayBuffer {
     const manifestBytes = new TextEncoder().encode(JSON.stringify(this.manifest));
     const headerBytes = 12; // magic, version, manifestLen
     const codecBytes = this.codec?.byteLength ?? 0;
-    const out = new ArrayBuffer(headerBytes + manifestBytes.byteLength + this.checkpoint.byteLength + codecBytes);
+    const tokBytes = this.tokenizer?.byteLength ?? 0;
+    const out = new ArrayBuffer(
+      headerBytes + manifestBytes.byteLength + this.checkpoint.byteLength + codecBytes + tokBytes,
+    );
     const head = new Uint32Array(out, 0, 3);
     head[0] = PKG_MAGIC;
     head[1] = PKG_VERSION;
@@ -198,7 +272,11 @@ export class EvermindModelPackage {
     o += manifestBytes.byteLength;
     new Uint8Array(out, o, this.checkpoint.byteLength).set(new Uint8Array(this.checkpoint));
     o += this.checkpoint.byteLength;
-    if (this.codec) new Uint8Array(out, o, codecBytes).set(new Uint8Array(this.codec));
+    if (this.codec) {
+      new Uint8Array(out, o, codecBytes).set(new Uint8Array(this.codec));
+      o += codecBytes;
+    }
+    if (this.tokenizer) new Uint8Array(out, o, tokBytes).set(new Uint8Array(this.tokenizer));
     return out;
   }
 
@@ -215,18 +293,35 @@ export class EvermindModelPackage {
     const manifestBytes = new Uint8Array(buffer, headerBytes, manifestLen);
     const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as EvermindModelManifest;
     const bodyStart = headerBytes + manifestLen;
-    // A codec section follows the checkpoint only when the manifest fixed the
-    // checkpoint length; otherwise the checkpoint runs to end-of-blob (text layout).
+    // Sections run checkpoint -> codec -> tokenizer, each present only when the
+    // manifest says so. A section's length is explicit whenever another follows it;
+    // the last section runs to end-of-blob. That keeps every package written before
+    // the codec and tokenizer sections existed readable byte for byte.
     const cpBytes = manifest.checkpointBytes;
-    if (cpBytes != null) {
-      if (bodyStart + cpBytes > buffer.byteLength) {
-        throw new Error("EvermindModelPackage.fromBlob: truncated (checkpointBytes exceeds blob)");
-      }
-      const checkpoint = buffer.slice(bodyStart, bodyStart + cpBytes);
-      const codec = bodyStart + cpBytes < buffer.byteLength ? buffer.slice(bodyStart + cpBytes) : undefined;
-      return new EvermindModelPackage(manifest, checkpoint, codec);
+    if (cpBytes == null) return new EvermindModelPackage(manifest, buffer.slice(bodyStart));
+    if (bodyStart + cpBytes > buffer.byteLength) {
+      throw new Error("EvermindModelPackage.fromBlob: truncated (checkpointBytes exceeds blob)");
     }
-    return new EvermindModelPackage(manifest, buffer.slice(bodyStart));
+    const checkpoint = buffer.slice(bodyStart, bodyStart + cpBytes);
+    let o = bodyStart + cpBytes;
+
+    const tokBytes = manifest.tokenizerBytes ?? 0;
+    if (o + tokBytes > buffer.byteLength) {
+      throw new Error("EvermindModelPackage.fromBlob: truncated (tokenizerBytes exceeds blob)");
+    }
+    const tokStart = buffer.byteLength - tokBytes;
+
+    let codec: ArrayBuffer | undefined;
+    if (o < tokStart) {
+      const codecEnd = manifest.codecBytes != null ? o + manifest.codecBytes : tokStart;
+      if (codecEnd > tokStart) {
+        throw new Error("EvermindModelPackage.fromBlob: truncated (codecBytes overruns the tokenizer section)");
+      }
+      codec = buffer.slice(o, codecEnd);
+      o = codecEnd;
+    }
+    const tokenizer = tokBytes > 0 ? buffer.slice(tokStart) : undefined;
+    return new EvermindModelPackage(manifest, checkpoint, codec, tokenizer);
   }
 
   /** Verify integrity + structural sanity before trusting a downloaded package. */
@@ -262,7 +357,42 @@ export class EvermindModelPackage {
         }
       }
     }
+    // An embedded tokenizer must be intact AND agree with the model's vocabulary —
+    // a corrupt or mismatched one decodes confidently into nonsense.
+    if (this.manifest.tokenizerFormat) {
+      if (!this.tokenizer) {
+        errors.push("manifest declares an embedded tokenizer but the package has no tokenizer section");
+      } else {
+        const tokActual = fnv1a(new Uint8Array(this.tokenizer));
+        if (tokActual !== this.manifest.tokenizerChecksum) {
+          errors.push(
+            `tokenizer checksum mismatch (manifest ${this.manifest.tokenizerChecksum}, actual ${tokActual}) - corrupt tokenizer`,
+          );
+        }
+        const modelVocab = this.manifest.config?.['vocabSize'];
+        const tokVocab = this.manifest.tokenizerVocabSize;
+        if (modelVocab != null && tokVocab != null && modelVocab !== tokVocab) {
+          errors.push(`tokenizer vocabSize (${tokVocab}) does not match the model's (${modelVocab})`);
+        }
+      }
+    }
     return { ok: errors.length === 0, errors };
+  }
+
+  /**
+   * The tokenizer embedded in this package, or `null` when it carries none.
+   *
+   * A package WITH one is self-contained: a consumer runs `loadLM()` +
+   * `loadTokenizer()` and can turn text into tokens and back with the exact
+   * vocabulary the model was trained on. A package without one still loads — every
+   * artifact published before this section existed is in that shape — but the
+   * consumer must supply the matching vocabulary itself.
+   */
+  loadTokenizer(): BPETokenizer | null {
+    if (!this.manifest.tokenizerFormat || !this.tokenizer) return null;
+    const v = this.validate();
+    if (!v.ok) throw new Error(`EvermindModelPackage.loadTokenizer: ${v.errors.join("; ")}`);
+    return BPETokenizer.deserialize(this.tokenizer);
   }
 
   /** Reconstruct the bare MoE layer. Validates first; throws if invalid / wrong type. */

@@ -36,6 +36,7 @@ import {
 import { LINEAR_FORWARD_WGSL } from '../kernels/linear_projection.js';
 import { gaussianArray } from '../utils/rng.js';
 import { ACTIVATIONS_WGSL }    from '../kernels/activations.js';
+import { COL_SLICE_WGSL, COL_SLICE_ENTRY, dispatchColumnSlice } from '../kernels/slice.js';
 
 import type { SequenceLayer, LayerForwardResult, LayerParam } from './sequence_layer.js';
 
@@ -147,6 +148,7 @@ export class AttentionBlock implements SequenceLayer {
             attn_fwd: createComputePipeline(d, ATTENTION_FORWARD_WGSL,  'attention_forward'),
             attn_val: createComputePipeline(d, ATTENTION_FORWARD_WGSL,  'attention_value'),
             softmax : createComputePipeline(d, SOFTMAX_WGSL,            'softmax_forward'),
+            colSlice: createComputePipeline(d, COL_SLICE_WGSL,          COL_SLICE_ENTRY),
             elAdd   : createComputePipeline(d, ADD_SHADER,              'main'),
         };
 
@@ -194,11 +196,13 @@ export class AttentionBlock implements SequenceLayer {
         const KBuf = createEmptyStorageBuffer(d, M * dModel * 4, true);
         const VBuf = createEmptyStorageBuffer(d, M * dModel * 4, true);
         {
-            const enc = d.createCommandEncoder();
-            enc.copyBufferToBuffer(qkvOut, 0,               QBuf, 0, M * dModel * 4);
-            enc.copyBufferToBuffer(qkvOut, M * dModel * 4,   KBuf, 0, M * dModel * 4);
-            enc.copyBufferToBuffer(qkvOut, 2 * M * dModel * 4, VBuf, 0, M * dModel * 4);
-            d.queue.submit([enc.finish()]);
+            // COLUMN split. `linear_forward` writes (M, 3*dModel) ROW-major, so Q, K
+            // and V are ranges of columns WITHIN every row — a strided gather, not a
+            // contiguous copy (which only coincides for M == 1).
+            const slice = this.pipelines['colSlice']!;
+            dispatchColumnSlice(d, slice, qkvOut, QBuf, M, 3 * dModel, 0, dModel);
+            dispatchColumnSlice(d, slice, qkvOut, KBuf, M, 3 * dModel, dModel, dModel);
+            dispatchColumnSlice(d, slice, qkvOut, VBuf, M, 3 * dModel, 2 * dModel, dModel);
         }
         qkvOut.destroy();
 

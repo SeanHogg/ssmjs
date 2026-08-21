@@ -33,6 +33,7 @@ import {
 import { COMPLEX_SSD_FORWARD_WGSL } from '../kernels/complex_ssd.js';
 import { gaussianArray } from '../utils/rng.js';
 import { CONV1D_FORWARD_WGSL }      from '../kernels/conv1d.js';
+import { COL_SLICE_WGSL, COL_SLICE_ENTRY, dispatchColumnSlice } from '../kernels/slice.js';
 import { LINEAR_FORWARD_WGSL }      from '../kernels/linear_projection.js';
 import { ACTIVATIONS_WGSL }         from '../kernels/activations.js';
 
@@ -145,6 +146,7 @@ export class Mamba3Block implements SequenceLayer {
         this.pipelines = {
             linear     : createComputePipeline(d, LINEAR_FORWARD_WGSL,       'linear_forward'),
             conv1d     : createComputePipeline(d, CONV1D_FORWARD_WGSL,       'conv1d_forward'),
+            colSlice   : createComputePipeline(d, COL_SLICE_WGSL, COL_SLICE_ENTRY),
             rmsnorm    : createComputePipeline(d, ACTIVATIONS_WGSL,          'rmsnorm_forward'),
             cssd_fwd   : createComputePipeline(d, COMPLEX_SSD_FORWARD_WGSL,  'complex_ssd_forward'),
             elAdd      : createComputePipeline(d, ADD_SHADER,                'main'),
@@ -198,10 +200,13 @@ export class Mamba3Block implements SequenceLayer {
         const xConvBuf = createEmptyStorageBuffer(d, M * convD * 4, true);
         const dtBuf    = createEmptyStorageBuffer(d, M * H * 4, true);
         {
-            const enc = d.createCommandEncoder();
-            enc.copyBufferToBuffer(inProjOut, 0,             xConvBuf, 0, M * convD * 4);
-            enc.copyBufferToBuffer(inProjOut, M * convD * 4, dtBuf,    0, M * H * 4);
-            d.queue.submit([enc.finish()]);
+            // COLUMN split. `linear_forward` writes (M, convD + H) ROW-major, so each
+            // part is a range of columns WITHIN every row — a strided gather, not a
+            // contiguous copy (which only coincides for M == 1).
+            const slice = this.pipelines['colSlice']!;
+            const stride = convD + H;
+            dispatchColumnSlice(d, slice, inProjOut, xConvBuf, M, stride, 0, convD);
+            dispatchColumnSlice(d, slice, inProjOut, dtBuf, M, stride, convD, H);
         }
         inProjOut.destroy();
 
@@ -221,11 +226,11 @@ export class Mamba3Block implements SequenceLayer {
         const bProjBuf = createEmptyStorageBuffer(d, M * G * Nc * 2 * 4, true);
         const cProjBuf = createEmptyStorageBuffer(d, M * G * Nc * 2 * 4, true);
         {
-            const enc = d.createCommandEncoder();
-            enc.copyBufferToBuffer(convOut, 0,                       xSsdBuf,  0, M * D * 4);
-            enc.copyBufferToBuffer(convOut, M * D * 4,               bProjBuf, 0, M * G * Nc * 2 * 4);
-            enc.copyBufferToBuffer(convOut, M * (D + G * Nc * 2) * 4, cProjBuf, 0, M * G * Nc * 2 * 4);
-            d.queue.submit([enc.finish()]);
+            // COLUMN split of the (M, convD) conv output — same reasoning as above.
+            const slice = this.pipelines['colSlice']!;
+            dispatchColumnSlice(d, slice, convOut, xSsdBuf, M, convD, 0, D);
+            dispatchColumnSlice(d, slice, convOut, bProjBuf, M, convD, D, G * Nc * 2);
+            dispatchColumnSlice(d, slice, convOut, cProjBuf, M, convD, D + G * Nc * 2, G * Nc * 2);
         }
         convOut.destroy();
 

@@ -20,6 +20,9 @@ your whole memory file into every prompt. That only pays off if recall is
 - `memory_recall` returns a **ranked top-K** (default 5, hard-capped), never the store.
 - Each entry's content is **truncated** (default 500 chars) before it hits context.
 - There is **no "return everything" tool** — a dump-all is more expensive than inlining.
+- `memory_compact` shrinks a fact that something durable has already ABSORBED down to a
+  one-line pointer stub, so it stops being recalled in full. It writes **through the live
+  store**, which is what keeps memory and the on-disk snapshot in agreement — see below.
 
 Tool descriptions are prescriptive ("call this *before* answering when…") because
 recent Claude models reach for tools more conservatively; the trigger condition in
@@ -65,17 +68,52 @@ for await (const msg of query({
 }
 ```
 
-### SSM-embedding recall (the premium path)
+### The snapshot is shared — the server watches it
 
-The local backend defaults to **lexical (Jaccard)** recall. For SSM-embedding
-cosine recall, pass an SSM runtime — e.g. reuse the agent-runtime's already-loaded
-Evermind runtime instead of standing up a second model:
+With `persistFile` set, the store lives in memory and the JSON snapshot is the source of
+truth across process lifetimes. Other processes edit that file too (the BuilderForce VS
+Code extension rewrites absorbed entries to stubs in place), so before every operation the
+backend stats the file and **re-hydrates from disk when it changed underneath** — otherwise
+this server, still holding the pre-edit bodies, would re-snapshot over that work on its next
+write. Its own writes are stamped (mtime + size + content hash) the moment they land, so the
+steady-state cost is one `stat` and there is no write-loop.
+
+### SSM-embedding recall — including on a headless host (no GPU)
+
+With no model configured the local backend ranks recall **lexically** (BM25). Point it
+at an Evermind checkpoint and the ordering becomes the SSM embedding's cosine ranking
+**fused with** the lexical one (Reciprocal Rank Fusion — dense ⊕ sparse, so exact
+tokens like identifiers and error codes are still caught). Every `memory_recall`
+result names the ranker it used, so a degrade to lexical is never silent:
+
+```
+Ranked by: semantic recall (SSM embedding fused with lexical).
+Ranked by: lexical recall (fallback - no embedding model loaded).
+```
+
+**The stdio/HTTP servers do not need a GPU for this.** `EvermindLM` is a pure-CPU
+model and `EvermindLM.embed()` mean-pools + L2-normalises the same hidden state the
+GPU `HybridMambaModel.embed()` does, to the same contract. Configure it with:
+
+| Env | Meaning |
+|-----|---------|
+| `BUILDERFORCE_MEMORY_MODEL` | Path to a `.evermind` package holding an `evermind-lm`. |
+| `BUILDERFORCE_MEMORY_TOKENIZER` | Tokenizer JSON for that checkpoint. Default `<model>.tokenizer.json`. |
+| `BUILDERFORCE_MEMORY_VECTORS` | Vector-cache path. Defaults beside the memory snapshot. |
+
+Vectors are cached **across process lifetimes** (stamped with the model's
+fingerprint, so an adapted checkpoint invalidates them), because a per-session
+subprocess that re-embedded the whole store on its first recall would cost more than
+the lexical ranking it replaces.
+
+In-process hosts pass an embedder directly — reuse an already-loaded GPU Evermind
+runtime rather than standing up a second model:
 
 ```ts
 const backend = await createLocalMemoryStoreBackend({ runtime: ssmMemoryService.runtime });
 ```
 
-Recall quality then improves automatically as that model is adapted/distilled.
+Either way, recall quality improves automatically as that model is adapted/distilled.
 
 ## One-shot install into any MCP host (not just Claude)
 

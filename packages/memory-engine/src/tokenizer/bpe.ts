@@ -52,6 +52,14 @@ const BYTE_DECODER = new Map([...BYTE_ENCODER].map(([k, v]) => [v, k]));
 const PRE_TOKENIZE_RE =
     /(?:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+/gu;
 
+/** A round-trippable snapshot of a {@link BPETokenizer} — see `toObject`/`deserialize`. */
+export interface BPETokenizerSpec {
+    vocab: Record<string, number>;
+    /** Merge rules in rank order ("a b" strings). */
+    merges: string[];
+    specials?: { bos?: string; eos?: string; pad?: string; unk?: string };
+}
+
 export class BPETokenizer {
     vocab: Map<string, number>;
     idToToken: Map<number, string>;
@@ -223,6 +231,53 @@ export class BPETokenizer {
         if (specials.pad) this.padToken = specials.pad;
         if (specials.unk) this.unkToken = specials.unk;
         this.loadFromObjects(vocabObj, mergeArr);
+    }
+
+    /**
+     * The tokenizer as a plain, JSON-serialisable object: vocab, merges and the
+     * four special-token strings.
+     *
+     * This is what lets an `.evermind` package EMBED its tokenizer instead of
+     * expecting a consumer to source the matching vocab separately — token ids are
+     * meaningless without the exact vocabulary that produced them, so shipping a
+     * checkpoint without one is shipping half an artifact.
+     */
+    toObject(): BPETokenizerSpec {
+        return {
+            vocab: Object.fromEntries(this.vocab),
+            merges: [...this.merges.entries()].sort((a, b) => a[1] - b[1]).map(([m]) => m),
+            specials: { bos: this.bosToken, eos: this.eosToken, pad: this.padToken, unk: this.unkToken },
+        };
+    }
+
+    /** Restore a tokenizer from {@link toObject}. */
+    loadFromSpec(spec: BPETokenizerSpec): void {
+        const sp = spec.specials;
+        if (sp?.bos) this.bosToken = sp.bos;
+        if (sp?.eos) this.eosToken = sp.eos;
+        if (sp?.pad) this.padToken = sp.pad;
+        if (sp?.unk) this.unkToken = sp.unk;
+        this.loadFromObjects(spec.vocab, spec.merges);
+    }
+
+    /** UTF-8 JSON bytes of {@link toObject} — the `.evermind` tokenizer section. */
+    serialize(): ArrayBuffer {
+        const bytes = new TextEncoder().encode(JSON.stringify(this.toObject()));
+        // Copy into a standalone ArrayBuffer (the view may be a slice of a pool).
+        const out = new ArrayBuffer(bytes.byteLength);
+        new Uint8Array(out).set(bytes);
+        return out;
+    }
+
+    /** Inverse of {@link serialize}. */
+    static deserialize(buffer: ArrayBuffer): BPETokenizer {
+        const spec = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer))) as BPETokenizerSpec;
+        if (!spec || typeof spec.vocab !== 'object' || !Array.isArray(spec.merges)) {
+            throw new Error('BPETokenizer.deserialize: not a serialised BPE tokenizer (expected { vocab, merges })');
+        }
+        const tok = new BPETokenizer();
+        tok.loadFromSpec(spec);
+        return tok;
     }
 
     /**
