@@ -81,6 +81,139 @@ const r = await cog.commit(
 
 `EvermindCognition` is store- and surface-agnostic — the `CognitionFactStore` interface is satisfied structurally by `MemoryStore` (no adapter) — so the same loop runs in the IDE, on-prem, cloud, and the browser.
 
+## Enterprise architecture
+
+Caching cuts the bill and cognition keeps knowledge current, but neither answers the questions an enterprise buyer actually asks before signing: *can it read our data, will it leak across tenants, what did that answer cost, and how do we know it got better?* Those four questions are what this layer exists to answer. Each is a port with adapters behind it, so a customer's existing stack is an adapter choice rather than a rewrite.
+
+| Layer | Entry point | Subpath export | Answers |
+|---|---|---|---|
+| **Ingestion** | `IngestionPipeline` | `@seanhogg/builderforce-memory/ingest` | Can it read our data — structured *and* unstructured — and stay current? |
+| **Vector store** | `VectorStore` port + adapters | `…/vectorstore` | Can it run against the database we already have, with our tenancy rules? |
+| **Retrieval** | `EnterpriseRetriever` | `…/rag` | Are the answers grounded, scoped, and citable? |
+| **Orchestration** | `AgentGraph` + patterns | `…/orchestration` | Can agents coordinate, pause for a human, and resume after a crash? |
+| **Telemetry** | `Tracer` + `MetricsRegistry` | `…/telemetry` | What did it cost, how fast was it, and where did it go wrong? |
+| **Evaluation** | `EvalHarness` | `…/eval` | How do we know it is good enough to launch — and still is? |
+
+### Ingestion — structured and unstructured through one path
+
+A support-ticket export (rows, typed columns) and a policy document (prose) reach the index through the same pipeline; the difference is which parser ran, not which system was built. Structure that survives parsing becomes **filterable metadata**, which is what makes *"summarise open P1 tickets about billing"* answerable — `status` and `priority` are database predicates rather than something the embedding has to imply.
+
+```ts
+import { IngestionPipeline, InMemoryIngestManifest } from '@seanhogg/builderforce-memory/ingest';
+import { MemoryVectorStore } from '@seanhogg/builderforce-memory/vectorstore';
+
+const pipeline = new IngestionPipeline({
+  store   : new MemoryVectorStore(),
+  embed   : (texts) => embedder.embedBatch(texts),
+  manifest: new InMemoryIngestManifest(),   // enables `diff` sync
+  tracer,
+});
+
+await pipeline.ingest([
+  { id: 'policy.md', tenantId: 'acme', title: 'Retention Policy',
+    content: { kind: 'text', text: markdown, mediaType: 'text/markdown' } },
+  { id: 'tickets',   tenantId: 'acme', acl: ['support'],
+    content: { kind: 'rows', rows: ticketRows, rowIdField: 'id' } },
+]);
+```
+
+What makes it a pipeline rather than a loader script is everything that happens on the **second** run: chunk ids are deterministic (a re-run overwrites instead of duplicating), content hashes mean only changed chunks are re-embedded, vanished chunks are deleted, one malformed document fails alone and is reported by id, and `forget(sourceId)` erases a source completely. Builtin parsers cover markdown (keeping the full heading breadcrumb), HTML, JSON, CSV/TSV and typed rows; a new format is a `ParserRegistry` entry, not a branch.
+
+### Vector store — a port, not a vendor
+
+Enterprises rarely get to choose the vector database; it is already pgvector in their Cloud SQL, Vertex AI Vector Search because they are a GCP shop, or Qdrant because platform standardised on it. So the store is a port and every adapter is infrastructure:
+
+- **`MemoryVectorStore`** — in-process, HNSW-backed, with BM25 keyword search. The default, the test double, and the honest answer for edge deployments.
+- **`RestVectorStore`** — one adapter over a **dialect registry**. `evermind` (the contract this package defines), `qdrant`, `pinecone` and `vertex-ai` ship; `registerDialect()` adds your own.
+
+Filters are **data**, not predicates, because a `(record) => boolean` cannot be pushed down to a remote database — it forces fetch-everything-then-filter, which is both slow and a leak. When a dialect cannot express a clause, `translateFilter` returns it as a **residual** that the store applies locally after over-fetching. A clause is never silently dropped, which on an ACL clause would be a cross-tenant leak.
+
+**Tenancy is compiled, not remembered.** An `AccessScope` becomes a filter that is AND-ed into every read, and it fails *closed*: ingestion always writes a non-empty `acl` (defaulting to `['*']`), so a record written without one matches nothing rather than everything.
+
+```ts
+const hits = await store.query({
+  vector, topK: 5,
+  scope: { tenantId: 'acme', principals: ['sec-team'], maxSensitivity: 3 },
+});
+```
+
+### Retrieval — hybrid, scoped, cited
+
+`EnterpriseRetriever` runs dense and lexical arms concurrently, fuses them with RRF, reranks with MMR for diversity, and optionally hands the result to a reranker. Dense retrieval alone misses exact tokens — error codes, SKUs, clause numbers; lexical alone misses paraphrase.
+
+It is also honest about degradation: against a store with no lexical index it reports `mode: 'dense-only'` rather than quietly returning worse answers. And with no passages in scope it **refuses**, because a confident answer with no evidence is the exact failure that kills pilots.
+
+```ts
+const { answer, result } = await retriever.answer(question, bridge, {
+  scope: { tenantId: 'acme', principals: ['support'] },
+});
+// answer cites passages as [1], [2] …; result.passages carries title + uri for each
+```
+
+### Orchestration — multi-agent as a stateful graph
+
+`AgentGraph` executes in **supersteps**: a frontier of nodes runs concurrently, their partial updates merge through declared channel reducers, and the next frontier comes from the edges. The three hard parts of multi-agent work fall out of that model — concurrent fan-out is just a bigger frontier, a merge conflict has a declared answer instead of a race, and the state between supersteps fully describes the run, so a checkpoint written there resumes it exactly.
+
+That last property is why crash recovery, human-in-the-loop approval and time-travel debugging are one mechanism here rather than three features:
+
+```ts
+const graph = new AgentGraph({ interruptBefore: ['publish'], checkpointer, tracer });
+const paused = await graph.invoke(input, { threadId });   // reason: 'interrupted'
+await graph.resume(threadId, { draft: humanEditedDraft }); // edits merge through the same reducers
+```
+
+Three patterns ship on top, and they compose — a supervisor's worker can be a ReAct agent:
+
+- **`createReactAgent`** — interleaved reasoning and tool use. The iteration cap is enforced in the routing rather than asked for in the prompt, and a malformed action or a failing tool comes back as an *observation* the model can recover from, never an exception that ends the run.
+- **`createReflectionAgent`** — generate → critique → revise, bounded. Reflection pays only when the critic may be harsh *and* the loop may stop; both limits are code, not prompt.
+- **`createSupervisor`** — hierarchical delegation. Workers return a **result**, not their transcript, which keeps the supervisor's context from growing into the sum of everything its workers read.
+
+### Telemetry — LLM-native metrics on one span stream
+
+Metrics are a *projection* of the trace stream rather than a second instrumentation path that can drift out of agreement with it. Attach `MetricsRegistry` as a `Tracer` exporter and tokens/sec, cost-per-request, TTFT and cache-hit rate fall out of traffic that is already traced.
+
+```ts
+const registry = new MetricsRegistry();
+const tracer   = new Tracer({ exporter: registry });
+const bridge   = new InstrumentedBridge(new AnthropicBridge({ apiKey }), { tracer });
+
+registry.llm().tokensPerSecond;         // throughput the user feels
+registry.llm().avgCostPerRequestUsd;    // the unit that ties spend to a decision
+registry.llm().localCacheHitRate;       // the lever that moves cost
+registry.llm().unpricedCalls;           // honesty: never billed at a silent zero
+```
+
+Every bridge reports what its last call actually consumed, so cost is **measured, not estimated** — and Anthropic's three-way input split (fresh / cache read / cache write) is priced at three different rates, because folding them together overstates spend by ~10× on exactly the cache-heavy traffic this package is tuned to produce. Spans export to any OTLP/HTTP collector (Cloud Trace, Datadog, Honeycomb, Tempo) using GenAI semantic conventions, over `fetch` rather than the OpenTelemetry SDK, so the package still runs in a browser and in a Worker.
+
+### Evaluation — the launch gate
+
+Projects die either because nobody can say whether the system is good enough, or because it regressed silently after launch. Both are the same missing artefact: a dataset, comparable scores, and a threshold a build can fail on.
+
+```ts
+const report = await new EvalHarness({
+  graders: [noError, retrievalRecall, citationValidity, substringChecks],
+  gate   : { minPassRate: 0.9, minGraderScore: { 'retrieval-recall': 0.85 }, maxMeanCostUsd: 0.01 },
+  tracer,
+}).run(dataset, target);
+
+console.log(formatReport(report));
+if (!report.gate.passed) process.exit(1);
+```
+
+Two graders matter most and generic LLM evals omit both. **`retrievalRecall`** asks whether the right source came back at all — a generation score cannot distinguish "reasoned badly" from "was handed nothing", and those have opposite fixes. **`citationValidity`** catches an answer citing `[7]` when six passages were supplied; that scores fine on similarity and fails an audit. Cost and latency are graded alongside quality, because a quality-only harness quietly ships an unaffordable system. A gate with no thresholds reports itself as **vacuous** rather than green.
+
+### Google Cloud
+
+`VertexAIBridge` and `VertexAIEmbedder` serve GCP deployments, and the `vertex-ai` dialect maps this filter algebra onto Vertex `restricts` / `numericRestricts`. Auth is **injected, never owned** — supply `getAccessToken` and the same code runs under Application Default Credentials locally, Workload Identity on GKE, and an impersonated token in CI, without this package taking on a credential lifecycle or a Node-only vendor SDK.
+
+Vertex AI Vector Search stores vectors and restricts but **not text**, so its dialect declares `storesText: false` and the store hydrates chunk text through a `textResolver` (Firestore, BigQuery or GCS beside the index). Pretending otherwise would return matches with empty text and an answer with no evidence.
+
+> **Validation status.** The `qdrant`, `pinecone` and `vertex-ai` dialects and the Vertex bridge are covered by unit tests that assert the emitted request bodies and parse recorded response shapes. They have **not** been exercised against live services from this repository, which has no credentials for them — see the Gap Register.
+
+### Discovery
+
+[`docs/enterprise-discovery.md`](docs/enterprise-discovery.md) is the technical discovery guide: the questions to ask a customer, which answer maps to which port, and the decisions that must be made before a line of integration code is written.
+
 ## Technical report & peer review
 
 The architecture is written up as a formal, peer-review-grade technical report, with the SSM cortex, Write-Through Cognition, and the limbic layer specified mathematically (including a monoid-scan proof and the single-incumbent invariant). It lives in [`publication/evermind/`](publication/evermind):

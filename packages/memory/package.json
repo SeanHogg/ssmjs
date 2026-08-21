@@ -1,7 +1,7 @@
 {
   "name": "@seanhogg/builderforce-memory",
-  "version": "2026.8.20",
-  "description": "BuilderForce Agent Memory — runtime layer. SSM execution, Transformer orchestration, online distillation, hybrid RAG retrieval, and persistent agent memory for BuilderForce.ai agents.",
+  "version": "2026.8.21",
+  "description": "BuilderForce Agent Memory — runtime layer. SSM execution, Transformer orchestration, online distillation, enterprise RAG (ingestion pipelines, vector-store adapters, tenant/ACL-scoped hybrid retrieval), multi-agent graph orchestration, LLM telemetry and cost accounting, and persistent agent memory for BuilderForce.ai agents.",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,6 +13,30 @@
     "./retrieval": {
       "types": "./dist/retrieval/index.d.ts",
       "import": "./dist/retrieval/index.js"
+    },
+    "./telemetry": {
+      "types": "./dist/telemetry/index.d.ts",
+      "import": "./dist/telemetry/index.js"
+    },
+    "./vectorstore": {
+      "types": "./dist/vectorstore/index.d.ts",
+      "import": "./dist/vectorstore/index.js"
+    },
+    "./ingest": {
+      "types": "./dist/ingest/index.d.ts",
+      "import": "./dist/ingest/index.js"
+    },
+    "./rag": {
+      "types": "./dist/rag/index.d.ts",
+      "import": "./dist/rag/index.js"
+    },
+    "./orchestration": {
+      "types": "./dist/orchestration/index.d.ts",
+      "import": "./dist/orchestration/index.js"
+    },
+    "./eval": {
+      "types": "./dist/eval/index.d.ts",
+      "import": "./dist/eval/index.js"
     }
   },
   "type": "module",
@@ -43,7 +67,13 @@
     "browser-ai",
     "agent-memory",
     "builderforce",
-    "typescript"
+    "typescript",
+    "rag",
+    "vector-database",
+    "multi-agent",
+    "observability",
+    "enterprise-ai",
+    "langgraph-alternative"
   ],
   "author": {
     "name": "Sean Hogg",

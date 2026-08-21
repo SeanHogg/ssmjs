@@ -100,12 +100,15 @@ export type { SSMRuntimeOptions, GenerateOptions } from './runtime/SSMRuntime.js
 // ── Bridges ───────────────────────────────────────────────────────────────────
 export type { TransformerBridge, BridgeGenerateOptions } from './bridges/TransformerBridge.js';
 export { OpenAIBridge }    from './bridges/OpenAIBridge.js';
+export { VertexAIBridge, VertexAIEmbedder } from './bridges/VertexAIBridge.js';
 export { AnthropicBridge } from './bridges/AnthropicBridge.js';
 export { FetchBridge }     from './bridges/FetchBridge.js';
 export { CachingBridge }   from './bridges/CachingBridge.js';
 export { SemanticCachingBridge } from './bridges/SemanticCachingBridge.js';
 export { ResponseCache, buildCacheKey } from './bridges/ResponseCache.js';
+export type { BridgeCallInfo }         from './bridges/TransformerBridge.js';
 export type { OpenAIBridgeOptions }    from './bridges/OpenAIBridge.js';
+export type { VertexAIBridgeOptions, VertexAIEmbedderOptions } from './bridges/VertexAIBridge.js';
 export type { AnthropicBridgeOptions } from './bridges/AnthropicBridge.js';
 export type { FetchBridgeOptions }     from './bridges/FetchBridge.js';
 export type { CachingBridgeOptions }   from './bridges/CachingBridge.js';
@@ -148,6 +151,223 @@ export type {
     HybridRetrieveOptions,
     HybridHit,
 } from './retrieval/index.js';
+
+// ── Telemetry (granular tracing + LLM-native metrics + cost-per-request) ──────
+export {
+    Tracer,
+    Span,
+    MetricsRegistry,
+    InstrumentedBridge,
+    InMemorySpanExporter,
+    ConsoleSpanExporter,
+    OtlpHttpSpanExporter,
+    toOtlpPayload,
+    toOtlpSpan,
+    percentile,
+    estimateCostUsd,
+    estimateTokens,
+    resolveRate,
+    DEFAULT_PRICE_BOOK,
+    ANTHROPIC_PRICE_BOOK,
+    EVERMIND_PRICE_BOOK,
+    DEFAULT_CACHE_READ_MULTIPLIER,
+    DEFAULT_CACHE_WRITE_MULTIPLIER,
+} from './telemetry/index.js';
+export type {
+    TracerOptions,
+    SpanOptions,
+    SpanData,
+    SpanKind,
+    SpanStatus,
+    SpanEvent,
+    SpanExporter,
+    AttributeValue,
+    LlmUsage,
+    LlmMetricSnapshot,
+    KindMetricSnapshot,
+    MetricsRegistryOptions,
+    InstrumentedBridgeOptions,
+    ConsoleSpanExporterOptions,
+    OtlpHttpSpanExporterOptions,
+    ModelRate,
+    PriceBook,
+} from './telemetry/index.js';
+
+// ── Vector store (port + adapters + tenant/ACL scoping) ───────────────────────
+export {
+    MemoryVectorStore,
+    RestVectorStore,
+    getDialect,
+    listDialects,
+    registerDialect,
+    evermindDialect,
+    qdrantDialect,
+    pineconeDialect,
+    vertexAiDialect,
+    accessFilter,
+    combineFilters,
+    matchesFilter,
+    filterFields,
+    TENANT_FIELD,
+    ACL_FIELD,
+    SENSITIVITY_FIELD,
+    ACL_PUBLIC,
+} from './vectorstore/index.js';
+export type {
+    MemoryVectorStoreOptions,
+    RestVectorStoreOptions,
+    VectorDialect,
+    DialectContext,
+    TranslatedFilter,
+    AccessScope,
+    ComparisonOp,
+    MetadataFilter,
+    MetadataRecord,
+    MetadataValue,
+    UpsertResult,
+    VectorMatch,
+    VectorQuery,
+    VectorRecord,
+    VectorStore,
+} from './vectorstore/index.js';
+
+// ── Ingestion (structured + unstructured → vector store, incremental sync) ────
+export {
+    IngestionPipeline,
+    InMemoryIngestManifest,
+    ParserRegistry,
+    BUILTIN_PARSERS,
+    rowsParser,
+    csvParser,
+    jsonParser,
+    markdownParser,
+    htmlParser,
+    plainTextParser,
+    parseCsv,
+    serializeRow,
+    hashText,
+    mapWithConcurrency,
+    SOURCE_ID_FIELD,
+    CHUNK_INDEX_FIELD,
+    CONTENT_HASH_FIELD,
+    TITLE_FIELD,
+    URI_FIELD,
+    PARSER_FIELD,
+} from './ingest/index.js';
+export type {
+    IngestionPipelineOptions,
+    BatchEmbedder,
+    ChunkFingerprint,
+    DocumentParser,
+    IngestManifest,
+    IngestionReport,
+    ParsedSection,
+    SourceContent,
+    SourceDocument,
+    StructuredRow,
+    SyncStrategy,
+} from './ingest/index.js';
+
+// ── Enterprise RAG (hybrid, scoped, cited) ────────────────────────────────────
+export {
+    EnterpriseRetriever,
+    buildGroundedPrompt,
+    GROUNDED_SYSTEM_PROMPT,
+    NO_EVIDENCE_ANSWER,
+} from './rag/index.js';
+export type {
+    EnterpriseRetrieverOptions,
+    RetrieveOptions,
+    RetrievalResult,
+    RetrievalMode,
+    RetrievedPassage,
+    Reranker,
+} from './rag/index.js';
+
+// ── Multi-agent orchestration (graph + ReAct/reflection/delegation) ───────────
+export {
+    AgentGraph,
+    appendReducer,
+    mergeReducer,
+    sumReducer,
+    unionReducer,
+    InMemoryCheckpointer,
+    KeyValueCheckpointer,
+    createReactAgent,
+    createReflectionAgent,
+    createSupervisor,
+    asWorker,
+    parseReactTurn,
+    renderToolCatalog,
+    renderTranscript,
+    REACT_PROTOCOL,
+    DEFAULT_CRITIC_PROMPT,
+    FINISH,
+    START,
+    END,
+} from './orchestration/index.js';
+export type {
+    AgentGraphOptions,
+    RunOptions,
+    InMemoryCheckpointerOptions,
+    KeyValueCheckpointerOptions,
+    KeyValueLike,
+    AgentTool,
+    AgentTurn,
+    AgentTurnRole,
+    ParsedAction,
+    ReactAgentOptions,
+    ReactState,
+    ReflectionAgentOptions,
+    ReflectionState,
+    SupervisorOptions,
+    SupervisorState,
+    Worker,
+    ChannelReducer,
+    ChannelSpec,
+    ChannelSpecs,
+    Checkpoint,
+    Checkpointer,
+    EdgeCondition,
+    GraphEndReason,
+    GraphEvent,
+    GraphRunResult,
+    GraphState,
+    NodeContext,
+    NodeFn,
+} from './orchestration/index.js';
+
+// ── Evaluation (the conception → launch gate) ─────────────────────────────────
+export {
+    EvalHarness,
+    evaluateGate,
+    formatReport,
+    exactMatch,
+    substringChecks,
+    embeddingSimilarity,
+    retrievalRecall,
+    citationValidity,
+    llmJudge,
+    noError,
+    costBudget,
+    DEFAULT_RAG_GRADERS,
+    DEFAULT_JUDGE_RUBRIC,
+} from './eval/index.js';
+export type {
+    EvalHarnessOptions,
+    EvalCase,
+    EvalDataset,
+    EvalGate,
+    EvalOutput,
+    EvalReport,
+    EvalTarget,
+    CaseResult,
+    GateVerdict,
+    GradeResult,
+    Grader,
+    LlmJudgeOptions,
+    SimilarityGraderOptions,
+} from './eval/index.js';
 
 // ── Router ────────────────────────────────────────────────────────────────────
 export { InferenceRouter } from './router/InferenceRouter.js';

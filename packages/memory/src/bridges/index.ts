@@ -1,13 +1,15 @@
-export type { TransformerBridge, BridgeGenerateOptions } from './TransformerBridge.js';
+export type { TransformerBridge, BridgeGenerateOptions, BridgeCallInfo } from './TransformerBridge.js';
 export { OpenAIBridge }    from './OpenAIBridge.js';
 export { AnthropicBridge } from './AnthropicBridge.js';
 export { FetchBridge }     from './FetchBridge.js';
 export { CachingBridge }   from './CachingBridge.js';
 export { SemanticCachingBridge } from './SemanticCachingBridge.js';
+export { VertexAIBridge, VertexAIEmbedder } from './VertexAIBridge.js';
 export { ResponseCache, buildCacheKey } from './ResponseCache.js';
 export type { OpenAIBridgeOptions }    from './OpenAIBridge.js';
 export type { AnthropicBridgeOptions } from './AnthropicBridge.js';
 export type { FetchBridgeOptions }     from './FetchBridge.js';
 export type { CachingBridgeOptions }   from './CachingBridge.js';
 export type { SemanticCachingBridgeOptions } from './SemanticCachingBridge.js';
+export type { VertexAIBridgeOptions, VertexAIEmbedderOptions } from './VertexAIBridge.js';
 export type { ResponseCacheOptions }   from './ResponseCache.js';

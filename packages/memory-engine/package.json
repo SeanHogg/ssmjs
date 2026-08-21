@@ -1,6 +1,6 @@
 {
   "name": "@seanhogg/builderforce-memory-engine",
-  "version": "2026.8.20",
+  "version": "2026.8.21",
   "description": "BuilderForce Agent Memory — engine layer. TypeScript/WGSL Mamba SSM kernels, model blocks, autograd, training, and BPE tokenizer (zero runtime deps, WebGPU-native).",
   "main": "dist/index.js",
   "module": "dist/index.js",

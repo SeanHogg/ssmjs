@@ -23,7 +23,6 @@ import type {
     LeafFilter,
     MetadataFilter,
     MetadataRecord,
-    MetadataValue,
     UpsertResult,
     VectorMatch,
     VectorRecord,

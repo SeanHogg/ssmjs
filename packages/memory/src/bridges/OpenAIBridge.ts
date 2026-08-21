@@ -158,6 +158,7 @@ async function* parseOpenAIStream(
 
                 try {
                     const chunk = JSON.parse(data) as Record<string, unknown>;
+                    onEvent?.(chunk);
                     const delta = (chunk as any).choices?.[0]?.delta?.content;
                     if (typeof delta === 'string' && delta.length > 0) yield delta;
                 } catch {
