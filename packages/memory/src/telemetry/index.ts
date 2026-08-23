@@ -7,6 +7,9 @@
 export { Tracer, Span } from './Tracer.js';
 export type { TracerOptions, SpanOptions } from './Tracer.js';
 
+export { parseTraceparent, formatTraceparent } from './traceparent.js';
+export type { TraceContext } from './traceparent.js';
+
 export { MetricsRegistry, percentile } from './MetricsRegistry.js';
 export type {
     LlmMetricSnapshot,

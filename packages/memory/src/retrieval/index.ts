@@ -9,8 +9,8 @@
 export { chunkText } from './chunk.js';
 export type { Chunk, ChunkOptions } from './chunk.js';
 
-export { bm25Search } from './bm25.js';
-export type { Bm25Doc, Bm25Hit, Bm25Options } from './bm25.js';
+export { bm25Search, bm25Idf, bm25LengthNorm, bm25TermScore, BM25_DEFAULT_K1, BM25_DEFAULT_B } from './bm25.js';
+export type { Bm25Doc, Bm25Hit, Bm25Options, Bm25Tokenizer } from './bm25.js';
 
 export { reciprocalRankFusion, maximalMarginalRelevance } from './fusion.js';
 export type { RankedList, FusedHit, MmrCandidate } from './fusion.js';

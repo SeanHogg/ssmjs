@@ -4,7 +4,7 @@
  */
 
 import { chunkText } from '../src/retrieval/chunk.js';
-import { bm25Search } from '../src/retrieval/bm25.js';
+import { bm25Search, bm25Idf, bm25LengthNorm, bm25TermScore } from '../src/retrieval/bm25.js';
 import { reciprocalRankFusion, maximalMarginalRelevance } from '../src/retrieval/fusion.js';
 import { hybridRetrieve } from '../src/retrieval/HybridRetriever.js';
 
@@ -91,6 +91,67 @@ test('bm25Search honours custom k1/b options', () => {
     const hits = bm25Search('alpha', docs, { k1: 1.2, b: 0.5 });
     expect(hits[0]!.id).toBe('a');
     expect(hits[0]!.score).toBeGreaterThan(0);
+});
+
+test('bm25Search accepts an injected tokenizer for both query and documents', () => {
+    // A stemming tokenizer: "run" in the query must reach "runs" in the doc, which
+    // the plain word-split tokenizer treats as two unrelated terms.
+    const stem = (text: string): string[] =>
+        (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).map((t) =>
+            t.endsWith('s') && !t.endsWith('ss') && t.length > 3 ? t.slice(0, -1) : t,
+        );
+
+    const docs = [
+        { id: 'match', text: 'the process runs nightly' },
+        { id: 'other', text: 'unrelated prose about weather' },
+    ];
+    expect(bm25Search('run', docs)).toEqual([]);
+    expect(bm25Search('run', docs, { tokenize: stem })[0]!.id).toBe('match');
+});
+
+test('an injected tokenizer that drops everything yields no hits, not a throw', () => {
+    const docs = [{ id: 'a', text: 'alpha beta' }];
+    expect(bm25Search('alpha', docs, { tokenize: () => [] })).toEqual([]);
+});
+
+// ── the exported scoring core (shared with the api's BM25F ranker) ─────────────
+
+test('bm25Idf is non-negative even for a term present in every document', () => {
+    expect(bm25Idf(10, 10)).toBeGreaterThanOrEqual(0);
+    expect(bm25Idf(10, 1)).toBeGreaterThan(bm25Idf(10, 9));
+});
+
+test('bm25Idf clamps a nonsense corpus rather than returning NaN', () => {
+    expect(Number.isFinite(bm25Idf(0, 0))).toBe(true);
+    expect(Number.isFinite(bm25Idf(5, 99))).toBe(true);
+    expect(Number.isFinite(bm25Idf(5, -1))).toBe(true);
+});
+
+test('bm25LengthNorm is 1 at average length and grows with document length', () => {
+    expect(bm25LengthNorm(100, 100, 0.75)).toBeCloseTo(1, 10);
+    expect(bm25LengthNorm(200, 100, 0.75)).toBeGreaterThan(1);
+    expect(bm25LengthNorm(50, 100, 0.75)).toBeLessThan(1);
+    // A zero-length corpus must not divide by zero.
+    expect(Number.isFinite(bm25LengthNorm(10, 0, 0.75))).toBe(true);
+});
+
+test('bm25TermScore saturates: doubling frequency does not double the score', () => {
+    const idf = 2;
+    const one = bm25TermScore(1, idf, 1, 1.5);
+    const two = bm25TermScore(2, idf, 1, 1.5);
+    expect(two).toBeGreaterThan(one);
+    expect(two).toBeLessThan(one * 2);
+    expect(bm25TermScore(0, idf, 1, 1.5)).toBe(0);
+});
+
+test('the core reproduces bm25Search exactly — one formula, two index shapes', () => {
+    // What the api's BM25F ranker does: read precomputed per-term stats and score
+    // them with the shared core. Over a single-term single-doc corpus it must match
+    // the inline index bm25Search builds, or the two rankers have drifted.
+    const docs = [{ id: 'a', text: 'alpha beta gamma' }];
+    const inline = bm25Search('alpha', docs)[0]!.score;
+    const fromStats = bm25TermScore(1, bm25Idf(1, 1), bm25LengthNorm(3, 3, 0.75), 1.5);
+    expect(fromStats).toBeCloseTo(inline, 12);
 });
 
 // ── reciprocalRankFusion ─────────────────────────────────────────────────────

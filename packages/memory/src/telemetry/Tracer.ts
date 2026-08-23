@@ -11,6 +11,7 @@
  */
 
 import { estimateCostUsd, DEFAULT_PRICE_BOOK, type PriceBook } from './pricing.js';
+import { formatTraceparent, type TraceContext } from './traceparent.js';
 import type {
     AttributeValue,
     LlmUsage,
@@ -28,6 +29,14 @@ export interface SpanOptions {
     parent?: Span;
     /** Force a trace id (e.g. to continue a trace propagated from an HTTP header). */
     traceId?: string;
+    /**
+     * A parent span in ANOTHER process, decoded from a `traceparent` header. Adopts
+     * its trace id, links to it as parent, and — crucially — obeys its sampling
+     * flag, so the four hops of a cloud run are one tree or none, never a tree with
+     * a hole where a hop re-rolled the dice. Ignored when `parent` is given (an
+     * in-process parent is always the more specific answer).
+     */
+    remoteParent?: TraceContext;
 }
 
 export interface TracerOptions {
@@ -121,8 +130,25 @@ export class Span {
     }
 
     /** Opens a child span inside this one (same trace, this span as parent). */
-    child(name: string, opts: Omit<SpanOptions, 'parent' | 'traceId'> = {}): Span {
+    child(name: string, opts: Omit<SpanOptions, 'parent' | 'traceId' | 'remoteParent'> = {}): Span {
         return this._tracer.startSpan(name, { ...opts, parent: this });
+    }
+
+    /**
+     * This span's position, for handing to another process. The sampling flag is the
+     * span's OWN `recorded` verdict, so the next hop inherits the decision already
+     * taken rather than making a second, possibly contradictory one.
+     */
+    context(): TraceContext {
+        return { traceId: this._data.traceId, spanId: this._data.spanId, sampled: this._recorded };
+    }
+
+    /**
+     * The `traceparent` header value to send on an outbound request made inside this
+     * span. Set it and the callee's root span becomes this span's child.
+     */
+    traceparent(): string {
+        return formatTraceparent(this.context());
     }
 
     end(status: SpanStatus = 'ok'): SpanData {
@@ -176,8 +202,13 @@ export class Tracer {
     now(): number { return this._now(); }
 
     startSpan(name: string, opts: SpanOptions = {}): Span {
-        const traceId  = opts.parent?.traceId ?? opts.traceId ?? this._newId(16);
-        const recorded = this._decideSampling(traceId, Boolean(opts.parent));
+        // An in-process parent beats a remote one: if both are present the remote
+        // header is stale context that the live parent already descends from.
+        const remote = opts.parent ? undefined : opts.remoteParent;
+        const traceId  = opts.parent?.traceId ?? remote?.traceId ?? opts.traceId ?? this._newId(16);
+        const recorded = remote
+            ? this._adoptSampling(traceId, remote.sampled)
+            : this._decideSampling(traceId, Boolean(opts.parent));
 
         const data: SpanData = {
             traceId,
@@ -190,6 +221,7 @@ export class Tracer {
             status: 'unset',
         };
         if (opts.parent) data.parentSpanId = opts.parent.spanId;
+        else if (remote) data.parentSpanId = remote.spanId;
 
         return new Span(this, data, recorded);
     }
@@ -238,6 +270,18 @@ export class Tracer {
         this._finished.push(data);
         this._buffer.push(data);
         if (this._buffer.length >= this._maxBatch) void this.flush();
+    }
+
+    /**
+     * Take the upstream hop's sampling verdict verbatim and record it against the
+     * trace, so every later span in this process inherits it too. Head-based
+     * sampling only works if it is decided ONCE, at the head.
+     */
+    private _adoptSampling(traceId: string, sampled: boolean): boolean {
+        const known = this._sampled.get(traceId);
+        if (known !== undefined) return known;
+        this._sampled.set(traceId, sampled);
+        return sampled;
     }
 
     private _decideSampling(traceId: string, hasParent: boolean): boolean {

@@ -133,6 +133,11 @@ export { cosineSimilarity, jaccardSimilarity, tokenize } from './similarity/inde
 export {
     chunkText,
     bm25Search,
+    bm25Idf,
+    bm25LengthNorm,
+    bm25TermScore,
+    BM25_DEFAULT_K1,
+    BM25_DEFAULT_B,
     reciprocalRankFusion,
     maximalMarginalRelevance,
     hybridRetrieve,
@@ -143,6 +148,7 @@ export type {
     Bm25Doc,
     Bm25Hit,
     Bm25Options,
+    Bm25Tokenizer,
     RankedList,
     FusedHit,
     MmrCandidate,
@@ -156,6 +162,8 @@ export type {
 export {
     Tracer,
     Span,
+    parseTraceparent,
+    formatTraceparent,
     MetricsRegistry,
     InstrumentedBridge,
     InMemorySpanExporter,
@@ -176,6 +184,7 @@ export {
 export type {
     TracerOptions,
     SpanOptions,
+    TraceContext,
     SpanData,
     SpanKind,
     SpanStatus,
